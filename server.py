@@ -2,11 +2,14 @@
 
 環境變數：
   ADMIN_PASSWORD   管理者密碼（必要）
-  SECRET_KEY       用來簽署登入狀態的隨機字串（必要，部署時請設定）
+  SECRET_KEY       選填，用來簽署登入狀態的隨機字串
   AI_PROVIDER / AI_API_KEY / AI_MODEL / AI_BASE_URL   見 ai.py
-  DATA_DIR         資料庫存放位置，預設 ./data
+  DATABASE_URL     選填，PostgreSQL 連線字串（Vercel 加入 Neon 後會自動設定）；
+                   沒設定時使用 SQLite 檔案
+  DATA_DIR         SQLite 存放位置，預設 ./data
   PORT             預設 8080
 """
+import hashlib
 import hmac
 import json
 import os
@@ -22,26 +25,54 @@ from flask import Flask, abort, g, jsonify, request, send_from_directory, sessio
 import ai
 
 ROOT = Path(__file__).parent
-DATA_DIR = Path(os.environ.get("DATA_DIR", ROOT / "data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+ON_VERCEL = bool(os.environ.get("VERCEL"))
+DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL") or ""
+USE_PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+DATA_DIR = Path(os.environ.get("DATA_DIR") or ("/tmp/ut-data" if ON_VERCEL else ROOT / "data"))
 DB_PATH = DATA_DIR / "app.db"
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
-MAX_HTML = 5 * 1024 * 1024
+MAX_HTML = 4 * 1024 * 1024          # Vercel 單次請求上限約 4.5 MB
 MAX_SESSION = 512 * 1024
 
 app = Flask(__name__, static_folder=str(ROOT / "static"))
-app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+# 沒設定 SECRET_KEY 時由管理密碼推導，確保多台伺服器之間登入狀態一致
+app.secret_key = os.environ.get("SECRET_KEY") or hashlib.sha256(("ut-session:" + ADMIN_PASSWORD).encode()).hexdigest()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
-                  SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "0") == "1",
+                  SESSION_COOKIE_SECURE=ON_VERCEL or os.environ.get("COOKIE_SECURE", "0") == "1",
                   MAX_CONTENT_LENGTH=MAX_HTML + 256 * 1024)
 
 
 # ---------- 資料庫 ----------
 
+class _PG:
+    """讓 PostgreSQL 與 SQLite 用同一套寫法（? 參數）。"""
+    def __init__(self, url):
+        import psycopg
+        from psycopg.rows import dict_row
+        self.conn = psycopg.connect(url, row_factory=dict_row, connect_timeout=10)
+
+    def execute(self, sql, params=()):
+        return self.conn.execute(sql.replace("?", "%s"), params)
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+
+def _connect():
+    if USE_PG:
+        return _PG(DATABASE_URL)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
+        g.db = _connect()
     return g.db
 
 
@@ -52,13 +83,21 @@ def close_db(_):
         conn.close()
 
 
+SCHEMA = [
+    "CREATE TABLE IF NOT EXISTS studies(id TEXT PRIMARY KEY, name TEXT, goal TEXT, html TEXT, tasks TEXT DEFAULT '[]', created_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, study_id TEXT, role TEXT, data TEXT, created_at TEXT)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_study ON sessions(study_id)",
+]
+
+
 def init_db():
-    with sqlite3.connect(DB_PATH) as c:
-        c.executescript("""
-        CREATE TABLE IF NOT EXISTS studies(id TEXT PRIMARY KEY, name TEXT, goal TEXT, html TEXT,
-            tasks TEXT DEFAULT '[]', created_at TEXT);
-        CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, study_id TEXT, role TEXT, data TEXT, created_at TEXT);
-        CREATE INDEX IF NOT EXISTS idx_sessions_study ON sessions(study_id);""")
+    conn = _connect()
+    try:
+        for stmt in SCHEMA:
+            conn.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def now():
@@ -167,7 +206,8 @@ def public_session(sid):
 
 @app.get("/api/me")
 def me():
-    return jsonify(admin=bool(session.get("admin")), aiReady=ai.configured(), provider=ai.PROVIDER, model=ai.MODEL)
+    return jsonify(admin=bool(session.get("admin")), aiReady=ai.configured(), provider=ai.PROVIDER, model=ai.MODEL,
+                   persistent=USE_PG or not ON_VERCEL)
 
 
 @app.get("/api/studies")
@@ -185,7 +225,7 @@ def create_study():
     if not html.strip():
         return jsonify(error="沒有 HTML 內容"), 400
     if len(html) > MAX_HTML:
-        return jsonify(error="檔案超過 5 MB"), 413
+        return jsonify(error="檔案超過 4 MB"), 413
     sid = new_id("s")
     db().execute("INSERT INTO studies VALUES(?,?,?,?,?,?)",
                  (sid, str(body.get("name") or "未命名測試")[:100], str(body.get("goal") or "")[:1000], html, "[]", now()))
@@ -297,7 +337,10 @@ def insight(sid):
         return jsonify(error=str(e)), 502
 
 
-init_db()
+try:
+    init_db()
+except Exception as e:  # 資料庫暫時連不上時，讓網站仍能啟動並顯示錯誤
+    print("資料庫初始化失敗：", e)
 
 if __name__ == "__main__":
     if not ADMIN_PASSWORD:
