@@ -14,6 +14,10 @@
 | `Dockerfile` | 部署用 |
 | `.env.example` | 設定範本 |
 
+## 示範原型
+
+`examples/demo-restaurant-ordering-prototype.html` 是一個可直接上傳到本系統的單檔餐廳自助點餐原型，包含選擇飲品、客製套餐及送出訂單等流程，可用來快速理解任務設定與測試結果分析方式。
+
 資料庫：有設定 `DATABASE_URL`（PostgreSQL）時使用它；沒有時使用 SQLite 檔案（`data/app.db`）。
 
 ## 設定

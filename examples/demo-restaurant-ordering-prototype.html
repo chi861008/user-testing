@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>好食光自助點餐</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f6f3ee; color: #27231f; font: 16px/1.5 system-ui, sans-serif; }
+    header { padding: 22px 28px; background: #18392b; color: white; display: flex; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 23px; margin: 0; }
+    .cart { background: #f5b942; color: #231d12; border: 0; border-radius: 999px; padding: 11px 18px; font-weight: 800; }
+    main { max-width: 920px; margin: 32px auto; padding: 0 20px; }
+    .hero { background: #fff1c9; padding: 28px; border-radius: 20px; margin-bottom: 22px; }
+    .hero h2 { margin: 0 0 7px; font-size: 30px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .card { background: white; border: 1px solid #e6dfd5; border-radius: 16px; padding: 20px; min-height: 180px; box-shadow: 0 8px 22px #5b49370e; }
+    .card h3 { margin: 0 0 6px; }
+    .price { color: #a13a2b; font-weight: 800; }
+    .card button, .primary { border: 0; border-radius: 10px; padding: 11px 15px; background: #18392b; color: white; font-weight: 750; cursor: pointer; }
+    .recommend { background: #f9e9e3; color: #a13a2b; padding: 8px; border-radius: 8px; margin: 10px 0; cursor: default; }
+    .panel { background: white; border-radius: 18px; padding: 24px; margin-top: 20px; }
+    .hidden { display: none; }
+    .options { display: flex; gap: 8px; margin: 14px 0; }
+    .options button { border: 1px solid #aaa; background: white; padding: 10px 14px; border-radius: 9px; }
+    .success { background: #ddf5e7; color: #17633b; padding: 14px; border-radius: 10px; font-weight: 800; margin-top: 14px; }
+    @media (max-width: 650px) {
+      .grid { grid-template-columns: 1fr; }
+      .hero h2 { font-size: 25px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 data-screen="點餐首頁">好食光自助點餐</h1>
+    <button id="cart" class="cart" onclick="showCart()">購物車（1）</button>
+  </header>
+  <main>
+    <section id="home">
+      <div class="hero">
+        <h2>今天想吃什麼？</h2>
+        <p>選擇餐點後，可以調整口味並送出訂單。</p>
+      </div>
+      <div class="grid">
+        <article class="card">
+          <h3>珍珠奶茶</h3>
+          <p>人氣飲品，香濃茶味。</p>
+          <p class="price">$65</p>
+          <button id="drink" onclick="showDrink()">珍珠奶茶</button>
+        </article>
+        <article class="card">
+          <h3>雞排套餐</h3>
+          <div id="recommend" class="recommend">今日推薦</div>
+          <p>雞排、薯條與飲料。</p>
+          <p class="price">$145</p>
+          <button id="meal" onclick="showMeal()">雞排套餐</button>
+        </article>
+        <article class="card">
+          <h3>蔬食沙拉</h3>
+          <p>當季蔬菜與堅果。</p>
+          <p class="price">$120</p>
+          <button id="salad">蔬食沙拉</button>
+        </article>
+      </div>
+    </section>
+
+    <section id="drinkPanel" class="panel hidden">
+      <h2 data-screen="珍珠奶茶">珍珠奶茶</h2>
+      <p>甜度：正常｜冰塊：正常</p>
+      <button id="addDrink" class="primary" onclick="done('drinkDone','已加入購物車')">加入購物車</button>
+      <div id="drinkDone"></div>
+    </section>
+
+    <section id="mealPanel" class="panel hidden">
+      <h2 data-screen="雞排套餐客製">雞排套餐</h2>
+      <p>請選擇辣度</p>
+      <div class="options">
+        <button id="noSpice">不辣</button>
+        <button id="mild" onclick="this.style.background='#f5b942'">少辣</button>
+        <button id="hot">大辣</button>
+      </div>
+      <button id="confirmMeal" class="primary" onclick="done('mealDone','客製完成')">確認客製</button>
+      <div id="mealDone"></div>
+    </section>
+
+    <section id="cartPanel" class="panel hidden">
+      <h2 data-screen="購物車">購物車</h2>
+      <p>珍珠奶茶 × 1　$65</p>
+      <button id="submitOrder" class="primary" onclick="done('orderDone','訂單已送出')">送出訂單</button>
+      <div id="orderDone"></div>
+    </section>
+  </main>
+  <script>
+    function only(id) {
+      ['home', 'drinkPanel', 'mealPanel', 'cartPanel'].forEach(function (item) {
+        document.getElementById(item).classList.toggle('hidden', item !== id);
+      });
+    }
+    function showDrink() { only('drinkPanel'); }
+    function showMeal() { only('mealPanel'); }
+    function showCart() { only('cartPanel'); }
+    function done(id, text) {
+      document.getElementById(id).className = 'success';
+      document.getElementById(id).textContent = text;
+    }
+  </script>
+</body>
+</html>
