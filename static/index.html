@@ -44,7 +44,7 @@ p{margin:0 0 10px}
 .btn.danger{color:var(--bad)}
 .btn.small{padding:3px 10px;font-size:13px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
-input[type=text],select,textarea{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:7px 10px;width:100%}
+input[type=text],input[type=password],select,textarea{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:7px 10px;width:100%}
 textarea{resize:vertical;line-height:1.6}
 label.f{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
 .banner{border-left:3px solid var(--warn);background:var(--surface);padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:14px}
@@ -115,6 +115,7 @@ body.testing #tester{display:flex}
   <header class="row" style="align-items:flex-start">
     <div class="grow"><h1>原型易用性測試</h1>
     <p class="sub">上傳 HTML 原型，AI 會產生測試任務。受測者實際操作後，這裡會整理出成功率、卡關的地方和改善建議。</p></div>
+    <button class="btn small hidden" id="btnChangePassword">更改密碼</button>
     <button class="btn small hidden" id="btnLogout">登出</button>
   </header>
   <div id="banner" class="banner hidden" role="status"></div>
@@ -136,6 +137,18 @@ body.testing #tester{display:flex}
     <section id="v-setup"></section>
     <section id="v-results" class="hidden"></section>
     <section id="v-share" class="hidden"></section>
+  </div>
+</div>
+
+<div class="overlay hidden" id="passwordOverlay">
+  <div class="card stack" role="dialog" aria-modal="true" aria-labelledby="passwordTitle">
+    <h2 id="passwordTitle">更改管理密碼</h2>
+    <p class="note">修改後，其他已登入的裝置會自動登出。新密碼至少需要 10 個字元。</p>
+    <div><label class="f" for="currentPassword">目前密碼</label><input type="password" id="currentPassword" autocomplete="current-password"></div>
+    <div><label class="f" for="newPassword">新密碼</label><input type="password" id="newPassword" autocomplete="new-password"></div>
+    <div><label class="f" for="confirmPassword">再次輸入新密碼</label><input type="password" id="confirmPassword" autocomplete="new-password"></div>
+    <p class="note" id="passwordMsg" role="status"></p>
+    <div class="row"><span class="grow"></span><button class="btn" id="cancelPassword">取消</button><button class="btn primary" id="savePassword">儲存新密碼</button></div>
   </div>
 </div>
 
@@ -215,18 +228,38 @@ function withTracker(html) {
 /* ============ admin ============ */
 const S = { me: null, list: [], sid: "", study: null, sessions: [], tab: "setup", trial: null, roleFilter: "", devFilter: "", rec: null, recMsg: null };
 
-function showLogin() { $("loginBox").classList.remove("hidden"); $("main").classList.add("hidden"); $("btnLogout").classList.add("hidden"); $("pw").focus(); }
+function showLogin() {
+  $("passwordOverlay").classList.add("hidden");
+  $("loginBox").classList.remove("hidden"); $("main").classList.add("hidden");
+  $("btnChangePassword").classList.add("hidden"); $("btnLogout").classList.add("hidden"); $("pw").focus();
+}
 $("btnLogin").onclick = async () => {
   try { await api("/api/login", { method: "POST", body: { password: $("pw").value } }); $("pw").value = ""; $("loginBox").classList.add("hidden"); await bootAdmin(); }
   catch (e) { setText("loginMsg", e.message); }
 };
 $("pw").addEventListener("keydown", e => { if (e.key === "Enter") $("btnLogin").click(); });
 $("btnLogout").onclick = async () => { await api("/api/logout", { method: "POST" }); showLogin(); };
+$("btnChangePassword").onclick = () => {
+  ["currentPassword", "newPassword", "confirmPassword"].forEach(id => $(id).value = "");
+  setText("passwordMsg", ""); $("passwordOverlay").classList.remove("hidden"); $("currentPassword").focus();
+};
+$("cancelPassword").onclick = () => $("passwordOverlay").classList.add("hidden");
+$("savePassword").onclick = async () => {
+  const current = $("currentPassword").value, next = $("newPassword").value;
+  if (next.length < 10) { setText("passwordMsg", "新密碼至少需要 10 個字元。"); return; }
+  if (next !== $("confirmPassword").value) { setText("passwordMsg", "兩次輸入的新密碼不一致。"); return; }
+  $("savePassword").disabled = true; setText("passwordMsg", "儲存中…");
+  try {
+    await api("/api/admin/password", { method: "POST", body: { current, new: next } });
+    $("passwordOverlay").classList.add("hidden"); banner("管理密碼已更新，其他已登入的裝置已登出。");
+  } catch (e) { setText("passwordMsg", e.message); }
+  finally { $("savePassword").disabled = false; }
+};
 
 async function bootAdmin() {
   S.me = await api("/api/me");
   if (!S.me.admin) { showLogin(); return; }
-  $("main").classList.remove("hidden"); $("btnLogout").classList.remove("hidden");
+  $("main").classList.remove("hidden"); $("btnChangePassword").classList.remove("hidden"); $("btnLogout").classList.remove("hidden");
   banner(!S.me.persistent ? "尚未連接資料庫：目前的資料隨時可能消失。請在 Vercel 專案的 Storage 加入 Neon 資料庫後重新部署。"
     : S.me.aiReady ? "" : "伺服器尚未設定 AI 金鑰（AI_API_KEY），無法自動產生任務與整理發現，但仍可手動建立任務。");
   await loadList();

@@ -86,6 +86,7 @@ def close_db(_):
 SCHEMA = [
     "CREATE TABLE IF NOT EXISTS studies(id TEXT PRIMARY KEY, name TEXT, goal TEXT, html TEXT, tasks TEXT DEFAULT '[]', created_at TEXT)",
     "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, study_id TEXT, role TEXT, data TEXT, created_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_study ON sessions(study_id)",
 ]
 
@@ -108,6 +109,49 @@ def new_id(prefix):
     return prefix + secrets.token_urlsafe(9).replace("-", "a").replace("_", "b")
 
 
+PASSWORD_ITERATIONS = 310_000
+
+
+def get_setting(key, default=""):
+    row = db().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    db().execute(
+        "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+
+
+def make_password_hash(password):
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), PASSWORD_ITERATIONS).hex()
+    return f"pbkdf2_sha256${PASSWORD_ITERATIONS}${salt}${digest}"
+
+
+def password_matches(password):
+    stored = get_setting("admin_password_hash")
+    if not stored:
+        return bool(ADMIN_PASSWORD) and hmac.compare_digest(password, ADMIN_PASSWORD)
+    try:
+        algorithm, iterations, salt, expected = stored.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), int(iterations)).hex()
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def password_version():
+    return get_setting("admin_password_version", "0")
+
+
+def is_admin():
+    return bool(session.get("admin")) and session.get("password_version", "0") == password_version()
+
+
 def get_study(sid):
     row = db().execute("SELECT * FROM studies WHERE id=?", (sid,)).fetchone()
     if not row:
@@ -128,7 +172,8 @@ def study_json(row, with_html=False):
 def admin_required(fn):
     @wraps(fn)
     def wrapper(*a, **kw):
-        if not session.get("admin"):
+        if not is_admin():
+            session.clear()
             return jsonify(error="請先登入"), 401
         return fn(*a, **kw)
     return wrapper
@@ -144,10 +189,12 @@ def login():
     if len(recent) >= 8:
         return jsonify(error="嘗試次數過多，請 10 分鐘後再試"), 429
     pw = (request.get_json(silent=True) or {}).get("password", "")
-    if not ADMIN_PASSWORD or not hmac.compare_digest(pw, ADMIN_PASSWORD):
+    configured = bool(get_setting("admin_password_hash") or ADMIN_PASSWORD)
+    if not configured or not password_matches(pw):
         _fails[ip] = recent + [time.time()]
-        return jsonify(error="密碼錯誤" if ADMIN_PASSWORD else "伺服器尚未設定 ADMIN_PASSWORD"), 401
+        return jsonify(error="密碼錯誤" if configured else "伺服器尚未設定 ADMIN_PASSWORD"), 401
     session["admin"] = True
+    session["password_version"] = password_version()
     session.permanent = True
     return jsonify(ok=True)
 
@@ -155,6 +202,28 @@ def login():
 @app.post("/api/logout")
 def logout():
     session.clear()
+    return jsonify(ok=True)
+
+
+@app.post("/api/admin/password")
+@admin_required
+def change_password():
+    body = request.get_json(silent=True) or {}
+    current = str(body.get("current", ""))
+    new = str(body.get("new", ""))
+    if not password_matches(current):
+        return jsonify(error="目前密碼不正確"), 400
+    if len(new) < 10:
+        return jsonify(error="新密碼至少需要 10 個字元"), 400
+    if len(new) > 200:
+        return jsonify(error="新密碼過長"), 400
+    if hmac.compare_digest(current, new):
+        return jsonify(error="新密碼不可與目前密碼相同"), 400
+    version = secrets.token_urlsafe(12)
+    set_setting("admin_password_hash", make_password_hash(new))
+    set_setting("admin_password_version", version)
+    db().commit()
+    session["password_version"] = version
     return jsonify(ok=True)
 
 
@@ -206,7 +275,7 @@ def public_session(sid):
 
 @app.get("/api/me")
 def me():
-    return jsonify(admin=bool(session.get("admin")), aiReady=ai.configured(), provider=ai.PROVIDER, model=ai.MODEL,
+    return jsonify(admin=is_admin(), aiReady=ai.configured(), provider=ai.PROVIDER, model=ai.MODEL,
                    persistent=USE_PG or not ON_VERCEL)
 
 

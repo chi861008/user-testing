@@ -28,6 +28,8 @@
 - `AI_PROVIDER`、`AI_API_KEY`、`AI_MODEL`：AI 服務設定
 - `SECRET_KEY`（選填）：保護登入狀態的隨機字串，沒設定時會由管理密碼產生
 
+首次部署後使用 `ADMIN_PASSWORD` 登入；之後可在後台右上角按「更改密碼」。新密碼會以加鹽雜湊儲存在資料庫，修改後其他已登入的裝置會自動登出。
+
 AI 預設使用 Claude API（`AI_PROVIDER=anthropic`，模型預設 `claude-sonnet-4-6`）。要改用 OpenAI 或其他相容 OpenAI 格式的服務，把 `AI_PROVIDER` 設為 `openai`，並填 `AI_BASE_URL` 與 `AI_MODEL`。不設定 AI 也能使用，只是任務要手動建立、沒有 AI 整理發現。
 
 AI 只在「產生任務」和「整理發現」時使用，受測者做測試不會用到。費用依各服務商計價，單次通常很低。
