@@ -75,7 +75,7 @@ docker run -d -p 8080:8080 -v usability-data:/data --env-file .env usability-tes
 
 ## 使用流程
 
-1. 用密碼登入，在「設定任務」上傳 HTML 原型。有設定 AI 時會自動產生 3–5 個任務
+1. 用密碼登入，在「設定任務」上傳單一 HTML，或完整靜態網站的 ZIP。有設定 AI 時會自動產生 3–5 個任務
 2. 沒有 AI 時：按「新增任務」寫好說明，再按「錄製」，在預覽中實際操作一次，系統會自動記下預期路徑與完成條件
 3. 每個任務按「試做」，確認出現「偵測到完成」，再按「儲存任務」
 4. 到「邀請受測者」複製測試連結，傳給同事或餐廳夥伴；現場測試就用平板打開同一個連結
@@ -88,7 +88,9 @@ docker run -d -p 8080:8080 -v usability-data:/data --env-file .env usability-tes
 
 ## 注意事項
 
-- 原型要是單一 HTML 檔（CSS、JavaScript 內嵌），最大 4 MB
+- 可上傳單一 HTML，或包含完整靜態網站的 ZIP；系統會優先尋找根目錄、`dist`、`build`、`out`、`public` 或 `www` 內的 `index.html`
+- 上傳檔最大 4 MB；ZIP 解壓後最大 16 MB、最多 250 個檔案。CSS、JavaScript、圖片與字型的相對路徑會保留
+- React、Vue 等原始碼專案需先完成建置，再把 `dist` 或 `build` 壓成 ZIP。PHP、Python、Node 等後端程式與其 API 不會在原型沙盒中執行
 - 拿到測試連結的人都能看到原型內容，敏感的設計請注意連結的分享範圍
 - 原型在受限的沙盒中執行，無法讀取網站的登入資訊；原型中連到外部網站的連結會被停用
 - AI 產生的完成條件不一定都正確，正式測試前每題都要試做確認

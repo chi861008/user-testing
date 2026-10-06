@@ -9,18 +9,25 @@
   DATA_DIR         SQLite 存放位置，預設 ./data
   PORT             預設 8080
 """
+import base64
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
+import re
 import secrets
 import sqlite3
 import time
+import zipfile
 from datetime import datetime, timezone
 from functools import wraps
+from io import BytesIO
 from pathlib import Path
+from pathlib import PurePosixPath
+from urllib.parse import quote
 
-from flask import Flask, abort, g, jsonify, request, send_from_directory, session
+from flask import Flask, Response, abort, g, jsonify, request, send_from_directory, session
 
 import ai
 
@@ -32,6 +39,8 @@ DATA_DIR = Path(os.environ.get("DATA_DIR") or ("/tmp/ut-data" if ON_VERCEL else 
 DB_PATH = DATA_DIR / "app.db"
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 MAX_HTML = 4 * 1024 * 1024          # Vercel 單次請求上限約 4.5 MB
+MAX_ZIP_EXPANDED = 16 * 1024 * 1024
+MAX_ZIP_FILES = 250
 MAX_SESSION = 512 * 1024
 
 app = Flask(__name__, static_folder=str(ROOT / "static"))
@@ -86,6 +95,7 @@ def close_db(_):
 SCHEMA = [
     "CREATE TABLE IF NOT EXISTS studies(id TEXT PRIMARY KEY, name TEXT, goal TEXT, html TEXT, tasks TEXT DEFAULT '[]', created_at TEXT)",
     "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, study_id TEXT, role TEXT, data TEXT, created_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS study_assets(study_id TEXT, path TEXT, mime TEXT, data TEXT, PRIMARY KEY(study_id, path))",
     "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_study ON sessions(study_id)",
 ]
@@ -165,6 +175,81 @@ def study_json(row, with_html=False):
     if with_html:
         d["html"] = row["html"]
     return d
+
+
+def decode_html(raw):
+    for encoding in ("utf-8-sig", "big5", "cp950"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("utf-8", errors="replace")
+
+
+def clean_zip_path(name):
+    """Return a safe, normalized ZIP path or None for metadata/unsafe paths."""
+    name = name.replace("\\", "/")
+    p = PurePosixPath(name)
+    if not name or name.startswith("/") or ".." in p.parts:
+        return None
+    parts = [part for part in p.parts if part not in ("", ".")]
+    if not parts or parts[0] == "__MACOSX" or parts[-1] == ".DS_Store":
+        return None
+    return "/".join(parts)
+
+
+def choose_zip_entry(paths):
+    htmls = [p for p in paths if p.lower().endswith((".html", ".htm"))]
+    if not htmls:
+        return None
+
+    def score(p):
+        parts = [x.lower() for x in PurePosixPath(p).parts]
+        noisy = any(x in {"node_modules", ".git", "vendor", "coverage"} for x in parts)
+        built = next((i for i, x in enumerate(parts[:-1]) if x in {"dist", "build", "out", "public", "www"}), None)
+        return (
+            9 if noisy else
+            0 if p.lower() == "index.html" else
+            1 if built is not None and parts[-1] == "index.html" else
+            2 if parts[-1] == "index.html" else
+            3,
+            built if built is not None else 99,
+            len(PurePosixPath(p).parts),
+            len(p),
+            p.lower(),
+        )
+
+    return min(htmls, key=score)
+
+
+def add_asset_base(html, sid, entry):
+    directory = str(PurePosixPath(entry).parent)
+    prefix = "" if directory == "." else quote(directory.strip("/"), safe="/") + "/"
+    asset_endpoint = f"/api/public/study/{quote(sid, safe='')}/asset/"
+    tag = f'<base href="{asset_endpoint}{prefix}">'
+    # Backend templates commonly use /static/...; map those root-relative assets
+    # into the uploaded package. Runtime API calls still require a real backend.
+    parent = PurePosixPath(entry).parent
+    root = parent.parent if parent.name.lower() in {"templates", "views"} else parent
+    root_prefix = "" if str(root) == "." else quote(str(root).strip("/"), safe="/") + "/"
+    asset_root = asset_endpoint + root_prefix
+    html = re.sub(r'(?i)(\b(?:src|href|poster)\s*=\s*["\'])/(?!/)',
+                  lambda m: m.group(1) + asset_root, html)
+    html = re.sub(r'(?i)(url\(\s*["\']?)/(?!/)',
+                  lambda m: m.group(1) + asset_root, html)
+    lower = html.lower()
+    i = lower.find("<head")
+    if i >= 0:
+        close = html.find(">", i)
+        if close >= 0:
+            return html[:close + 1] + tag + html[close + 1:]
+    return tag + html
+
+
+def store_asset(conn, sid, path, raw):
+    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    conn.execute("INSERT INTO study_assets VALUES(?,?,?,?)",
+                 (sid, path, mime, base64.b64encode(raw).decode("ascii")))
 
 
 # ---------- 登入 ----------
@@ -251,6 +336,26 @@ def public_study(sid):
     return jsonify(name=row["name"], tasks=tasks, html=row["html"])
 
 
+@app.get("/api/public/study/<sid>/asset/<path:asset_path>")
+def public_asset(sid, asset_path):
+    get_study(sid)
+    path = clean_zip_path(asset_path)
+    if not path or path != asset_path:
+        abort(404)
+    row = db().execute("SELECT mime,data FROM study_assets WHERE study_id=? AND path=?",
+                       (sid, path)).fetchone()
+    if not row:
+        abort(404)
+    try:
+        raw = base64.b64decode(row["data"], validate=True)
+    except (ValueError, TypeError):
+        abort(500)
+    resp = Response(raw, mimetype=row["mime"] or "application/octet-stream")
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
+
+
 @app.post("/api/public/study/<sid>/session")
 def public_session(sid):
     get_study(sid)
@@ -302,6 +407,68 @@ def create_study():
     return jsonify(id=sid)
 
 
+@app.post("/api/studies/import")
+@admin_required
+def import_study():
+    uploaded = request.files.get("file")
+    if not uploaded or not uploaded.filename:
+        return jsonify(error="請選擇 HTML 或 ZIP 檔案"), 400
+    raw = uploaded.read(MAX_HTML + 1)
+    if len(raw) > MAX_HTML:
+        return jsonify(error="上傳檔案超過 4 MB"), 413
+    name = str(request.form.get("name") or Path(uploaded.filename).stem or "未命名測試")[:100]
+    goal = str(request.form.get("goal") or "")[:1000]
+    sid = new_id("s")
+    filename = uploaded.filename.lower()
+
+    if filename.endswith((".html", ".htm")):
+        html = decode_html(raw)
+        if not html.strip():
+            return jsonify(error="沒有 HTML 內容"), 400
+        if len(html.encode("utf-8")) > MAX_HTML:
+            return jsonify(error="HTML 解壓後超過 4 MB"), 413
+        db().execute("INSERT INTO studies VALUES(?,?,?,?,?,?)",
+                     (sid, name, goal, html, "[]", now()))
+        db().commit()
+        return jsonify(id=sid, entry=uploaded.filename, assets=0)
+
+    if not filename.endswith(".zip"):
+        return jsonify(error="只支援 .html、.htm 或 .zip 檔案"), 400
+    try:
+        with zipfile.ZipFile(BytesIO(raw)) as zf:
+            infos = [i for i in zf.infolist() if not i.is_dir()]
+            if len(infos) > MAX_ZIP_FILES:
+                return jsonify(error=f"ZIP 內檔案超過 {MAX_ZIP_FILES} 個"), 413
+            if sum(i.file_size for i in infos) > MAX_ZIP_EXPANDED:
+                return jsonify(error="ZIP 解壓後超過 16 MB"), 413
+            files = {}
+            for info in infos:
+                path = clean_zip_path(info.filename)
+                if not path:
+                    continue
+                # Unix symlinks are not useful website assets and can be misleading.
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    continue
+                files[path] = zf.read(info)
+    except (zipfile.BadZipFile, RuntimeError, OSError):
+        return jsonify(error="ZIP 無法讀取，請確認檔案沒有損壞或加密"), 400
+
+    entry = choose_zip_entry(files)
+    if not entry:
+        return jsonify(error="ZIP 內找不到 .html 或 .htm 首頁"), 400
+    html = decode_html(files[entry])
+    if not html.strip():
+        return jsonify(error="找到的入口 HTML 是空白檔案"), 400
+    html = add_asset_base(html, sid, entry)
+    conn = db()
+    conn.execute("INSERT INTO studies VALUES(?,?,?,?,?,?)",
+                 (sid, name, goal, html, "[]", now()))
+    for path, data in files.items():
+        store_asset(conn, sid, path, data)
+    conn.commit()
+    return jsonify(id=sid, entry=entry, assets=len(files))
+
+
 @app.get("/api/studies/<sid>")
 @admin_required
 def read_study(sid):
@@ -328,6 +495,7 @@ def save_tasks(sid):
 @admin_required
 def delete_study(sid):
     db().execute("DELETE FROM sessions WHERE study_id=?", (sid,))
+    db().execute("DELETE FROM study_assets WHERE study_id=?", (sid,))
     db().execute("DELETE FROM studies WHERE id=?", (sid,))
     db().commit()
     return jsonify(ok=True)

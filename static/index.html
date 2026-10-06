@@ -173,8 +173,10 @@ const secs = ms => ms == null ? "—" : (ms < 60000 ? Math.round(ms / 1000) + " 
 const ROLES = ["公司同事", "餐廳老闆", "店員", "其他"];
 
 async function api(path, opts = {}) {
+  const form = opts.body instanceof FormData;
   const r = await fetch(path, { method: opts.method || "GET", credentials: "same-origin",
-    headers: opts.body ? { "Content-Type": "application/json" } : {}, body: opts.body ? JSON.stringify(opts.body) : undefined });
+    headers: opts.body && !form ? { "Content-Type": "application/json" } : {},
+    body: opts.body ? (form ? opts.body : JSON.stringify(opts.body)) : undefined });
   let data = null; try { data = await r.json(); } catch (e) {}
   if (r.status === 401 && !path.startsWith("/api/login")) { showLogin(); }
   if (!r.ok) { const err = new Error((data && data.error) || `伺服器錯誤（${r.status}）`); err.status = r.status; throw err; }
@@ -292,32 +294,37 @@ function renderSetup() {
   if (!S.sid) {
     v.innerHTML = `<div class="panel stack" style="max-width:720px">
       <h2>上傳原型</h2>
-      <p class="note">支援單一 HTML 檔（CSS、JavaScript 寫在同一個檔案裡），最大 4 MB。用 AI 生成的原型通常就是這種格式。</p>
+      <p class="note">支援單一 HTML，或包含完整靜態網站的 ZIP（會自動尋找 index.html，並保留 CSS、JavaScript、圖片與字型），上傳檔最大 4 MB、ZIP 解壓後最大 16 MB。</p>
       <div><label class="f" for="nName">測試名稱</label><input type="text" id="nName" placeholder="例如：Kiosk 點餐流程 v2"></div>
       <div><label class="f" for="nGoal">想測什麼（選填，讓 AI 出的任務更準）</label>
         <textarea id="nGoal" rows="3" placeholder="例如：想知道客人能不能自己完成加點、修改甜度冰塊，以及找到結帳按鈕"></textarea></div>
-      <div class="drop"><input type="file" id="nFile" accept=".html,.htm,text/html"><p class="note" id="nFileMsg" style="margin:8px 0 0">選擇 .html 檔</p></div>
+      <div class="drop"><input type="file" id="nFile" accept=".html,.htm,.zip,text/html,application/zip"><p class="note" id="nFileMsg" style="margin:8px 0 0">選擇 .html 或 .zip 檔</p></div>
+      <p class="note">React／Vue 等專案請先執行建置，再把 dist 或 build 資料夾壓成 ZIP。需要後端 API 的功能不會在原型沙盒中運作。</p>
       <div class="row"><span class="note grow" id="nMsg"></span><button class="btn primary" id="nGo" disabled>上傳並產生任務</button></div>
     </div>`;
-    let fileText = "";
+    let selectedFile = null;
     $("nFile").onchange = async e => {
       const f = e.target.files[0]; if (!f) return;
-      fileText = await f.text();
-      setText("nFileMsg", `${f.name}（${Math.round(fileText.length / 1024)} KB）`);
-      if (!$("nName").value) $("nName").value = f.name.replace(/\.html?$/i, "");
+      selectedFile = f;
+      setText("nFileMsg", `${f.name}（${Math.round(f.size / 1024)} KB）`);
+      if (!$("nName").value) $("nName").value = f.name.replace(/\.(html?|zip)$/i, "");
       $("nGo").disabled = false;
       $("nGo").textContent = S.me.aiReady ? "上傳並產生任務" : "上傳";
     };
     $("nGo").onclick = async () => {
       $("nGo").disabled = true; setText("nMsg", "上傳中…");
       try {
-        const { id } = await api("/api/studies", { method: "POST", body: { name: $("nName").value.trim(), goal: $("nGoal").value.trim(), html: fileText } });
+        const form = new FormData();
+        form.append("file", selectedFile); form.append("name", $("nName").value.trim()); form.append("goal", $("nGoal").value.trim());
+        const imported = await api("/api/studies/import", { method: "POST", body: form });
+        const { id } = imported;
         if (S.me.aiReady) {
           setText("nMsg", "AI 正在閱讀原型、設計任務，約需 20–60 秒…");
           try { await api(`/api/studies/${id}/generate`, { method: "POST" }); }
           catch (e) { banner("自動產生任務失敗：" + e.message + "。可以按「重新產生」再試，或手動新增。"); }
         }
         await loadList(); await openStudy(id);
+        if (imported.assets) banner(`已從 ZIP 載入 ${imported.entry}，共 ${imported.assets} 個檔案。`);
       } catch (e) { setText("nMsg", e.message); $("nGo").disabled = false; }
     };
     return;
