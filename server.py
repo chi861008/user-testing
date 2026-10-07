@@ -141,9 +141,14 @@ def make_password_hash(password):
 
 
 def password_matches(password):
+    # 環境變數 ADMIN_PASSWORD 一律視為有效的「主密碼」：即使資料庫裡另外存了
+    # 以站內「更改密碼」設定的雜湊，也能用它登入。這樣忘記站內密碼時，
+    # 只要改 Vercel 的 ADMIN_PASSWORD 環境變數並重新部署，就能重新進入。
+    if ADMIN_PASSWORD and hmac.compare_digest(password, ADMIN_PASSWORD):
+        return True
     stored = get_setting("admin_password_hash")
     if not stored:
-        return bool(ADMIN_PASSWORD) and hmac.compare_digest(password, ADMIN_PASSWORD)
+        return False
     try:
         algorithm, iterations, salt, expected = stored.split("$", 3)
         if algorithm != "pbkdf2_sha256":
