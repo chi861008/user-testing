@@ -66,6 +66,8 @@ label.f{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
 @media (max-width:520px){.cond{grid-template-columns:1fr}}
 .ok{color:var(--good);font-weight:700}
 .drop{border:1.5px dashed var(--rule);border-radius:12px;padding:26px;text-align:center;background:var(--surface)}
+.file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.file-pick{display:inline-block;margin:8px 0 2px}
 /* results */
 .kpis{display:flex;flex-wrap:wrap;gap:6px 26px;margin:0 0 14px;color:var(--muted);font-size:14px}
 .kpis b{color:var(--ink);font-size:20px;margin-right:4px;font-variant-numeric:tabular-nums}
@@ -298,8 +300,8 @@ function renderSetup() {
       <div><label class="f" for="nName">測試名稱</label><input type="text" id="nName" placeholder="例如：Kiosk 點餐流程 v2"></div>
       <div><label class="f" for="nGoal">想測什麼（選填，讓 AI 出的任務更準）</label>
         <textarea id="nGoal" rows="3" placeholder="例如：想知道客人能不能自己完成加點、修改甜度冰塊，以及找到結帳按鈕"></textarea></div>
-      <div class="drop"><label class="f" for="nFolder">直接選擇完整資料夾</label><input type="file" id="nFolder" webkitdirectory directory multiple><p class="note" id="nFolderMsg" style="margin:8px 0 0">尚未選擇資料夾</p></div>
-      <div class="drop"><label class="f" for="nFile">或者選擇 HTML／ZIP 檔</label><input type="file" id="nFile" accept=".html,.htm,.zip,text/html,application/zip"><p class="note" id="nFileMsg" style="margin:8px 0 0">尚未選擇檔案</p></div>
+      <div class="drop"><label class="f" for="nFile">如果你拿到的是 ZIP 或 HTML 檔，請選這裡</label><input class="file-input" type="file" id="nFile" accept=".html,.htm,.zip,text/html,application/zip"><label class="btn primary file-pick" for="nFile">選擇 ZIP／HTML 檔</label><p class="note" id="nFileMsg" style="margin:8px 0 0">尚未選擇檔案</p></div>
+      <div class="drop"><label class="f" for="nFolder">如果你拿到的是已解壓縮的網站資料夾，請選這裡</label><input class="file-input" type="file" id="nFolder" webkitdirectory directory multiple><label class="btn file-pick" for="nFolder">選擇網站資料夾</label><p class="note" id="nFolderMsg" style="margin:8px 0 0">尚未選擇資料夾</p></div>
       <p class="note">資料夾或上傳檔合計最大 4 MB；ZIP 解壓後最大 16 MB，最多 250 個檔案。</p>
       <p class="note">React／Vue 等專案請先執行建置，再把 dist 或 build 資料夾壓成 ZIP。需要後端 API 的功能不會在原型沙盒中運作。</p>
       <div class="row"><span class="note grow" id="nMsg"></span><button class="btn primary" id="nGo" disabled>上傳並產生任務</button></div>
