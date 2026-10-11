@@ -114,7 +114,7 @@ body.testing #tester{display:flex}
 <div class="wrap" id="admin">
   <header class="row" style="align-items:flex-start">
     <div class="grow"><h1>原型易用性測試</h1>
-    <p class="sub">上傳 HTML 原型，AI 會產生測試任務。受測者實際操作後，這裡會整理出成功率、卡關的地方和改善建議。</p></div>
+    <p class="sub">上傳網站原型，設定測試任務。受測者實際操作後，這裡會整理出成功率、卡關的地方和改善建議。</p></div>
     <button class="btn small hidden" id="btnChangePassword">更改密碼</button>
     <button class="btn small hidden" id="btnLogout">登出</button>
   </header>
@@ -294,20 +294,33 @@ function renderSetup() {
   if (!S.sid) {
     v.innerHTML = `<div class="panel stack" style="max-width:720px">
       <h2>上傳原型</h2>
-      <p class="note">支援單一 HTML，或包含完整靜態網站的 ZIP（會自動尋找 index.html，並保留 CSS、JavaScript、圖片與字型），上傳檔最大 4 MB、ZIP 解壓後最大 16 MB。</p>
+      <p class="note">可以直接選擇整個網站資料夾，也支援單一 HTML 或 ZIP。系統會自動尋找 index.html，並保留 CSS、JavaScript、圖片與字型。</p>
       <div><label class="f" for="nName">測試名稱</label><input type="text" id="nName" placeholder="例如：Kiosk 點餐流程 v2"></div>
       <div><label class="f" for="nGoal">想測什麼（選填，讓 AI 出的任務更準）</label>
         <textarea id="nGoal" rows="3" placeholder="例如：想知道客人能不能自己完成加點、修改甜度冰塊，以及找到結帳按鈕"></textarea></div>
-      <div class="drop"><input type="file" id="nFile" accept=".html,.htm,.zip,text/html,application/zip"><p class="note" id="nFileMsg" style="margin:8px 0 0">選擇 .html 或 .zip 檔</p></div>
+      <div class="drop"><label class="f" for="nFolder">直接選擇完整資料夾</label><input type="file" id="nFolder" webkitdirectory directory multiple><p class="note" id="nFolderMsg" style="margin:8px 0 0">尚未選擇資料夾</p></div>
+      <div class="drop"><label class="f" for="nFile">或者選擇 HTML／ZIP 檔</label><input type="file" id="nFile" accept=".html,.htm,.zip,text/html,application/zip"><p class="note" id="nFileMsg" style="margin:8px 0 0">尚未選擇檔案</p></div>
+      <p class="note">資料夾或上傳檔合計最大 4 MB；ZIP 解壓後最大 16 MB，最多 250 個檔案。</p>
       <p class="note">React／Vue 等專案請先執行建置，再把 dist 或 build 資料夾壓成 ZIP。需要後端 API 的功能不會在原型沙盒中運作。</p>
       <div class="row"><span class="note grow" id="nMsg"></span><button class="btn primary" id="nGo" disabled>上傳並產生任務</button></div>
     </div>`;
-    let selectedFile = null;
+    let selectedFile = null, selectedFolder = [];
     $("nFile").onchange = async e => {
       const f = e.target.files[0]; if (!f) return;
-      selectedFile = f;
+      selectedFile = f; selectedFolder = []; $("nFolder").value = ""; setText("nFolderMsg", "尚未選擇資料夾");
       setText("nFileMsg", `${f.name}（${Math.round(f.size / 1024)} KB）`);
       if (!$("nName").value) $("nName").value = f.name.replace(/\.(html?|zip)$/i, "");
+      $("nGo").disabled = false;
+      $("nGo").textContent = S.me.aiReady ? "上傳並產生任務" : "上傳";
+    };
+    $("nFolder").onchange = e => {
+      selectedFolder = Array.from(e.target.files || []); if (!selectedFolder.length) return;
+      selectedFile = null; $("nFile").value = ""; setText("nFileMsg", "尚未選擇檔案");
+      const total = selectedFolder.reduce((sum, f) => sum + f.size, 0);
+      const firstPath = selectedFolder[0].webkitRelativePath || selectedFolder[0].name;
+      const folderName = firstPath.split("/")[0];
+      setText("nFolderMsg", `${folderName}（${selectedFolder.length} 個檔案，${Math.round(total / 1024)} KB）`);
+      if (!$("nName").value) $("nName").value = folderName;
       $("nGo").disabled = false;
       $("nGo").textContent = S.me.aiReady ? "上傳並產生任務" : "上傳";
     };
@@ -315,7 +328,9 @@ function renderSetup() {
       $("nGo").disabled = true; setText("nMsg", "上傳中…");
       try {
         const form = new FormData();
-        form.append("file", selectedFile); form.append("name", $("nName").value.trim()); form.append("goal", $("nGoal").value.trim());
+        if (selectedFile) form.append("file", selectedFile);
+        else selectedFolder.forEach(f => { form.append("files", f, f.name); form.append("paths", f.webkitRelativePath || f.name); });
+        form.append("name", $("nName").value.trim()); form.append("goal", $("nGoal").value.trim());
         const imported = await api("/api/studies/import", { method: "POST", body: form });
         const { id } = imported;
         if (S.me.aiReady) {
@@ -324,7 +339,7 @@ function renderSetup() {
           catch (e) { banner("自動產生任務失敗：" + e.message + "。可以按「重新產生」再試，或手動新增。"); }
         }
         await loadList(); await openStudy(id);
-        if (imported.assets) banner(`已從 ZIP 載入 ${imported.entry}，共 ${imported.assets} 個檔案。`);
+        if (imported.assets) banner(`已從${imported.source === "folder" ? "資料夾" : " ZIP"}載入 ${imported.entry}，共 ${imported.assets} 個檔案。`);
       } catch (e) { setText("nMsg", e.message); $("nGo").disabled = false; }
     };
     return;

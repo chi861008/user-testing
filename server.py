@@ -257,6 +257,23 @@ def store_asset(conn, sid, path, raw):
                  (sid, path, mime, base64.b64encode(raw).decode("ascii")))
 
 
+def save_packaged_study(sid, name, goal, files):
+    entry = choose_zip_entry(files)
+    if not entry:
+        raise ValueError("資料夾內找不到 .html 或 .htm 首頁")
+    html = decode_html(files[entry])
+    if not html.strip():
+        raise ValueError("找到的入口 HTML 是空白檔案")
+    html = add_asset_base(html, sid, entry)
+    conn = db()
+    conn.execute("INSERT INTO studies VALUES(?,?,?,?,?,?)",
+                 (sid, name, goal, html, "[]", now()))
+    for path, data in files.items():
+        store_asset(conn, sid, path, data)
+    conn.commit()
+    return entry
+
+
 # ---------- 登入 ----------
 
 def admin_required(fn):
@@ -415,6 +432,36 @@ def create_study():
 @app.post("/api/studies/import")
 @admin_required
 def import_study():
+    folder_uploads = [item for item in request.files.getlist("files") if item.filename]
+    folder_paths = request.form.getlist("paths")
+    if folder_uploads:
+        if len(folder_uploads) > MAX_ZIP_FILES:
+            return jsonify(error=f"資料夾內檔案超過 {MAX_ZIP_FILES} 個"), 413
+        files = {}
+        total = 0
+        for index, item in enumerate(folder_uploads):
+            supplied_path = folder_paths[index] if index < len(folder_paths) else item.filename
+            path = clean_zip_path(supplied_path)
+            if not path:
+                continue
+            raw_file = item.read(MAX_HTML + 1)
+            total += len(raw_file)
+            if total > MAX_HTML:
+                return jsonify(error="資料夾檔案合計超過 4 MB"), 413
+            files[path] = raw_file
+        if not files:
+            return jsonify(error="選擇的資料夾沒有可上傳的檔案"), 400
+        first_path = next(iter(files))
+        default_name = PurePosixPath(first_path).parts[0] if "/" in first_path else "資料夾原型"
+        name = str(request.form.get("name") or default_name)[:100]
+        goal = str(request.form.get("goal") or "")[:1000]
+        sid = new_id("s")
+        try:
+            entry = save_packaged_study(sid, name, goal, files)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(id=sid, entry=entry, assets=len(files), source="folder")
+
     uploaded = request.files.get("file")
     if not uploaded or not uploaded.filename:
         return jsonify(error="請選擇 HTML 或 ZIP 檔案"), 400
@@ -458,20 +505,11 @@ def import_study():
     except (zipfile.BadZipFile, RuntimeError, OSError):
         return jsonify(error="ZIP 無法讀取，請確認檔案沒有損壞或加密"), 400
 
-    entry = choose_zip_entry(files)
-    if not entry:
-        return jsonify(error="ZIP 內找不到 .html 或 .htm 首頁"), 400
-    html = decode_html(files[entry])
-    if not html.strip():
-        return jsonify(error="找到的入口 HTML 是空白檔案"), 400
-    html = add_asset_base(html, sid, entry)
-    conn = db()
-    conn.execute("INSERT INTO studies VALUES(?,?,?,?,?,?)",
-                 (sid, name, goal, html, "[]", now()))
-    for path, data in files.items():
-        store_asset(conn, sid, path, data)
-    conn.commit()
-    return jsonify(id=sid, entry=entry, assets=len(files))
+    try:
+        entry = save_packaged_study(sid, name, goal, files)
+    except ValueError as exc:
+        return jsonify(error=str(exc).replace("資料夾", "ZIP")), 400
+    return jsonify(id=sid, entry=entry, assets=len(files), source="zip")
 
 
 @app.get("/api/studies/<sid>")
