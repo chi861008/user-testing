@@ -12,6 +12,7 @@
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
@@ -26,6 +27,7 @@ from io import BytesIO
 from pathlib import Path
 from pathlib import PurePosixPath
 from urllib.parse import quote
+from urllib.parse import urlsplit
 
 from flask import Flask, Response, abort, g, jsonify, request, send_from_directory, session
 
@@ -96,6 +98,7 @@ SCHEMA = [
     "CREATE TABLE IF NOT EXISTS studies(id TEXT PRIMARY KEY, name TEXT, goal TEXT, html TEXT, tasks TEXT DEFAULT '[]', created_at TEXT)",
     "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, study_id TEXT, role TEXT, data TEXT, created_at TEXT)",
     "CREATE TABLE IF NOT EXISTS study_assets(study_id TEXT, path TEXT, mime TEXT, data TEXT, PRIMARY KEY(study_id, path))",
+    "CREATE TABLE IF NOT EXISTS study_sources(study_id TEXT PRIMARY KEY, url TEXT)",
     "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_study ON sessions(study_id)",
 ]
@@ -176,10 +179,35 @@ def get_study(sid):
 
 def study_json(row, with_html=False):
     d = {"id": row["id"], "name": row["name"], "goal": row["goal"], "createdAt": row["created_at"],
-         "tasks": json.loads(row["tasks"] or "[]"), "size": len(row["html"] or "")}
+         "tasks": json.loads(row["tasks"] or "[]"), "size": len(row["html"] or ""),
+         "sourceURL": study_source(row["id"])}
     if with_html:
         d["html"] = row["html"]
     return d
+
+
+def study_source(sid):
+    row = db().execute("SELECT url FROM study_sources WHERE study_id=?", (sid,)).fetchone()
+    return row["url"] if row else ""
+
+
+def valid_public_url(value):
+    try:
+        parsed = urlsplit(str(value).strip())
+        host = parsed.hostname
+        parsed.port  # Force validation of a malformed explicit port.
+        if parsed.scheme != "https" or not host or parsed.username or parsed.password:
+            return False
+        if host.lower() in {"localhost", "localhost.localdomain"} or host.lower().endswith((".local", ".internal", ".localhost")):
+            return False
+        try:
+            if not ipaddress.ip_address(host).is_global:
+                return False
+        except ValueError:
+            pass
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 def decode_html(raw):
@@ -355,7 +383,7 @@ def headers(resp):
 def public_study(sid):
     row = get_study(sid)
     tasks = [{"id": t["id"], "prompt": t["prompt"], "cond": t["cond"]} for t in json.loads(row["tasks"] or "[]")]
-    return jsonify(name=row["name"], tasks=tasks, html=row["html"])
+    return jsonify(name=row["name"], tasks=tasks, html=row["html"], url=study_source(sid))
 
 
 @app.get("/api/public/study/<sid>/asset/<path:asset_path>")
@@ -427,6 +455,26 @@ def create_study():
                  (sid, str(body.get("name") or "未命名測試")[:100], str(body.get("goal") or "")[:1000], html, "[]", now()))
     db().commit()
     return jsonify(id=sid)
+
+
+@app.post("/api/studies/url")
+@admin_required
+def create_url_study():
+    body = request.get_json(silent=True) or {}
+    url = str(body.get("url") or "").strip()
+    if not valid_public_url(url):
+        return jsonify(error="請輸入有效的公開 HTTPS 網址（不支援內部或本機網址）"), 400
+    host = (urlsplit(url).hostname or "").lower()
+    if host == (request.host.split(":", 1)[0] or "").lower():
+        return jsonify(error="請輸入要測試的目標網站網址"), 400
+    sid = new_id("s")
+    name = str(body.get("name") or host)[:100]
+    goal = str(body.get("goal") or "")[:1000]
+    conn = db()
+    conn.execute("INSERT INTO studies VALUES(?,?,?,?,?,?)", (sid, name, goal, "", "[]", now()))
+    conn.execute("INSERT INTO study_sources VALUES(?,?)", (sid, url))
+    conn.commit()
+    return jsonify(id=sid, url=url)
 
 
 @app.post("/api/studies/import")
@@ -539,6 +587,7 @@ def save_tasks(sid):
 def delete_study(sid):
     db().execute("DELETE FROM sessions WHERE study_id=?", (sid,))
     db().execute("DELETE FROM study_assets WHERE study_id=?", (sid,))
+    db().execute("DELETE FROM study_sources WHERE study_id=?", (sid,))
     db().execute("DELETE FROM studies WHERE id=?", (sid,))
     db().commit()
     return jsonify(ok=True)

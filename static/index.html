@@ -157,7 +157,7 @@ body.testing #tester{display:flex}
 
 <div id="tester" aria-live="polite">
   <div class="tbar"><span class="step" id="tStep"></span><span class="ttext" id="tText"></span>
-    <button class="btn small" id="tShow">看任務</button><button class="btn small" id="tGiveUp">放棄這題</button></div>
+    <a class="btn small hidden" id="tOpen" target="_blank" rel="noopener">另開網站</a><button class="btn small hidden" id="tComplete">我完成了</button><button class="btn small" id="tShow">看任務</button><button class="btn small" id="tGiveUp">放棄這題</button></div>
   <iframe id="tFrame" title="受測原型" sandbox="allow-scripts allow-forms allow-modals"></iframe>
   <div class="overlay hidden" id="tOverlay"><div class="card" id="tCard"></div></div>
 </div>
@@ -297,11 +297,12 @@ function renderSetup() {
   if (!S.sid) {
     v.innerHTML = `<div class="panel stack" style="max-width:720px">
       <h2>上傳原型</h2>
-      <p class="note">在同一個上傳區選擇網站資料夾，或選一個 HTML／ZIP 檔。系統會自動尋找 index.html，並保留 CSS、JavaScript、圖片與字型。</p>
+      <p class="note">選擇網站資料夾、HTML／ZIP 檔，或貼上已部署網站網址。</p>
       <div><label class="f" for="nName">測試名稱</label><input type="text" id="nName" placeholder="例如：Kiosk 點餐流程 v2"></div>
       <div><label class="f" for="nGoal">想測什麼（選填，讓 AI 出的任務更準）</label>
         <textarea id="nGoal" rows="3" placeholder="例如：想知道客人能不能自己完成加點、修改甜度冰塊，以及找到結帳按鈕"></textarea></div>
       <div class="drop"><p style="margin-bottom:6px"><strong>選擇網站資料</strong></p><p class="note">可選已解壓縮的資料夾，或選一個 ZIP／HTML 檔：</p><input class="file-input" type="file" id="nFile" accept=".html,.htm,.zip,text/html,application/zip"><input class="file-input" type="file" id="nFolder" webkitdirectory directory multiple><div class="upload-actions"><label class="btn primary file-pick" for="nFile">選擇 ZIP／HTML 檔</label><label class="btn file-pick" for="nFolder">選擇網站資料夾</label></div><p class="note" id="nFileMsg" style="margin:8px 0 0">尚未選擇檔案或資料夾</p></div>
+      <div class="drop"><label class="f" for="nUrl">或輸入已部署網站網址（公開 HTTPS）</label><div class="row"><input id="nUrl" type="url" placeholder="https://example.com" style="flex:1"><button class="btn" id="nUseUrl">使用這個網址</button></div><p class="note">受測者會在測試頁中開啟網站。需要網站允許被嵌入；這種模式以受測者手動標記完成，不收集點擊熱點。</p></div>
       <p class="note">資料夾或上傳檔合計最大 4 MB；ZIP 解壓後最大 16 MB，最多 250 個檔案。</p>
       <p class="note">React／Vue 等專案請先執行建置，再把 dist 或 build 資料夾壓成 ZIP。需要後端 API 的功能不會在原型沙盒中運作。</p>
       <div class="row"><span class="note grow" id="nMsg"></span><button class="btn primary" id="nGo" disabled>上傳並產生任務</button></div>
@@ -326,6 +327,15 @@ function renderSetup() {
       $("nGo").disabled = false;
       $("nGo").textContent = S.me.aiReady ? "上傳並產生任務" : "上傳";
     };
+    $("nUseUrl").onclick = async () => {
+      const url = $("nUrl").value.trim();
+      if (!url) { setText("nMsg", "請先輸入網站網址。"); return; }
+      $("nUseUrl").disabled = true; setText("nMsg", "正在建立網址測試…");
+      try {
+        const { id } = await api("/api/studies/url", { method: "POST", body: { name: $("nName").value.trim(), goal: $("nGoal").value.trim(), url } });
+        await loadList(); await openStudy(id);
+      } catch (e) { setText("nMsg", e.message); $("nUseUrl").disabled = false; }
+    };
     $("nGo").onclick = async () => {
       $("nGo").disabled = true; setText("nMsg", "上傳中…");
       try {
@@ -349,11 +359,11 @@ function renderSetup() {
   const st = S.study; if (!st) { v.innerHTML = `<p class="note">讀取中…</p>`; return; }
   v.innerHTML = `<div class="split">
     <div class="frameBox"><div class="frameBar"><span class="grow" id="pvLabel">原型預覽（可以直接操作）</span><button class="btn small" id="pvReset">重新載入</button></div>
-      <iframe id="pv" title="原型預覽" sandbox="allow-scripts allow-forms allow-modals"></iframe></div>
+      <iframe id="pv" title="原型預覽" sandbox="allow-scripts allow-forms allow-modals"></iframe><p id="urlPreviewNote" class="note${st.sourceURL ? "" : " hidden"}" style="padding:8px 12px;margin:0">若網站無法載入，可能禁止嵌入。外部網址模式不支援自動錄製或點擊熱點。</p></div>
     <div>
       <div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">測試任務</h2>
-        <button class="btn small" id="btnRegen"${S.me.aiReady ? "" : " disabled"}>重新產生</button><button class="btn small" id="btnAddTask">新增任務</button></div>
-      <p class="note">每個任務都按一次「試做」：在左邊照著做，確認出現「偵測到完成」，代表自動判斷設定正確。</p>
+        <button class="btn small" id="btnRegen"${S.me.aiReady && !st.sourceURL ? "" : " disabled"}>重新產生</button><button class="btn small" id="btnAddTask">新增任務</button></div>
+      <p class="note">${st.sourceURL ? "為每位受測者手動建立任務；受測者會自行標記完成或放棄。" : "每個任務都按一次「試做」：在左邊照著做，確認出現「偵測到完成」，代表自動判斷設定正確。"}</p>
       <div id="taskList"></div>
       <div class="row" style="margin-top:12px"><span class="note grow" id="saveMsg"></span><button class="btn primary" id="btnSaveTasks">儲存任務</button></div>
       <p class="note" style="margin-top:14px">${st.goal ? "測試目標：" + esc(st.goal) : ""}</p>
@@ -377,25 +387,32 @@ function renderSetup() {
 }
 function resetPreview(cond) {
   const f = $("pv"); if (!f || !S.study) return;
+  if (S.study.sourceURL) {
+    f.removeAttribute("srcdoc");
+    f.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-same-origin allow-popups");
+    f.src = S.study.sourceURL;
+    return;
+  }
+  f.removeAttribute("src");
+  f.setAttribute("sandbox", "allow-scripts allow-forms allow-modals");
   f.onload = () => { if (cond) f.contentWindow.postMessage({ __ut: "cond", cond }, "*"); };
   f.srcdoc = withTracker(S.study.html);
 }
 function renderTasks() {
   const st = S.study, el = $("taskList");
-  if (!st.tasks.length) { el.innerHTML = `<div class="task"><p style="margin:0">還沒有任務。按「新增任務」，寫好任務說明後按「錄製」，在左邊的原型實際操作一次，系統會自動記下操作路徑和完成條件。</p></div>`; return; }
+  if (!st.tasks.length) { el.innerHTML = `<div class="task"><p style="margin:0">${st.sourceURL ? "還沒有任務。按「新增任務」並寫下要受測者完成的目標。" : "還沒有任務。按「新增任務」，寫好任務說明後按「錄製」，在左邊的原型實際操作一次，系統會自動記下操作路徑和完成條件。"}</p></div>`; return; }
   el.innerHTML = st.tasks.map((t, i) => {
     const rec = S.rec && S.rec.i === i;
     return `<div class="task" data-i="${i}">
     <div class="row" style="margin-bottom:6px"><span class="num">任務 ${i + 1}</span><span class="grow"></span>
-      <span class="ok hidden" data-ok="${i}">偵測到完成</span>
-      <button class="btn small${rec ? " primary" : ""}" data-rec="${i}"${S.rec && !rec ? " disabled" : ""}>${rec ? "停止錄製" : "錄製"}</button>
-      <button class="btn small" data-trial="${i}"${S.rec ? " disabled" : ""}>試做</button><button class="btn small" data-up="${i}" aria-label="上移"${i && !S.rec ? "" : " disabled"}>↑</button><button class="btn small" data-del="${i}"${S.rec ? " disabled" : ""}>刪除</button></div>
-    <p class="note${rec || S.recMsg?.i === i ? "" : " hidden"}" data-recl="${i}" aria-live="polite">${rec ? recText() : esc(S.recMsg?.i === i ? S.recMsg.text : "")}</p>
+      ${st.sourceURL ? "" : `<span class="ok hidden" data-ok="${i}">偵測到完成</span><button class="btn small${rec ? " primary" : ""}" data-rec="${i}"${S.rec && !rec ? " disabled" : ""}>${rec ? "停止錄製" : "錄製"}</button><button class="btn small" data-trial="${i}"${S.rec ? " disabled" : ""}>試做</button>`}
+      <button class="btn small" data-up="${i}" aria-label="上移"${i && !S.rec ? "" : " disabled"}>↑</button><button class="btn small" data-del="${i}"${S.rec ? " disabled" : ""}>刪除</button></div>
+    ${st.sourceURL ? `<p class="note">受測者會自行標記完成或放棄。</p>` : `<p class="note${rec || S.recMsg?.i === i ? "" : " hidden"}" data-recl="${i}" aria-live="polite">${rec ? recText() : esc(S.recMsg?.i === i ? S.recMsg.text : "")}</p>`}
     <label class="f" for="tp${i}">給受測者看的說明</label><textarea id="tp${i}" rows="2" data-k="prompt">${esc(t.prompt)}</textarea>
-    <div class="cond" style="margin-top:8px"><div><label class="f" for="tc${i}">完成條件</label>
+    ${st.sourceURL ? "" : `<div class="cond" style="margin-top:8px"><div><label class="f" for="tc${i}">完成條件</label>
       <select id="tc${i}" data-k="type"><option value="visible"${t.cond.type === "visible" ? " selected" : ""}>畫面出現文字</option><option value="click"${t.cond.type === "click" ? " selected" : ""}>點了含這段文字的按鈕</option></select></div>
       <div><label class="f" for="tt${i}">文字</label><input type="text" id="tt${i}" data-k="text" value="${esc(t.cond.text)}"></div></div>
-    <label class="f" for="tpa${i}" style="margin-top:8px">預期路徑（一行一步，寫要點的按鈕文字）</label><textarea id="tpa${i}" rows="${Math.max(3, (t.path || []).length + 1)}" data-k="path">${esc((t.path || []).join("\n"))}</textarea>
+    <label class="f" for="tpa${i}" style="margin-top:8px">預期路徑（一行一步，寫要點的按鈕文字）</label><textarea id="tpa${i}" rows="${Math.max(3, (t.path || []).length + 1)}" data-k="path">${esc((t.path || []).join("\n"))}</textarea>`}
   </div>`; }).join("");
   el.querySelectorAll("[data-rec]").forEach(b => b.onclick = () => (S.rec ? stopRecording() : startRecording(+b.dataset.rec)));
   el.querySelectorAll("[data-trial]").forEach(b => b.onclick = () => {
@@ -439,14 +456,15 @@ function readTasks() {
   document.querySelectorAll("#taskList .task").forEach(box => {
     const t = S.study.tasks[+box.dataset.i]; if (!t) return;
     t.prompt = box.querySelector('[data-k="prompt"]').value.trim();
+    if (S.study.sourceURL) return;
     t.cond = { type: box.querySelector('[data-k="type"]').value, text: box.querySelector('[data-k="text"]').value.trim() };
     t.path = box.querySelector('[data-k="path"]').value.split("\n").map(s => s.trim()).filter(Boolean);
   });
 }
 async function saveTasks() {
   readTasks();
-  const bad = S.study.tasks.findIndex(t => !t.prompt || !t.cond.text);
-  if (bad >= 0) { setText("saveMsg", `任務 ${bad + 1} 的說明或完成條件是空的。`); return; }
+  const bad = S.study.tasks.findIndex(t => !t.prompt || (!S.study.sourceURL && !t.cond.text));
+  if (bad >= 0) { setText("saveMsg", `任務 ${bad + 1} 的說明${S.study.sourceURL ? "" : "或完成條件"}是空的。`); return; }
   try { const r = await api(`/api/studies/${S.sid}/tasks`, { method: "PUT", body: { tasks: S.study.tasks } }); S.study.tasks = r.tasks; setText("saveMsg", "已儲存。"); }
   catch (e) { setText("saveMsg", e.message); }
 }
@@ -547,28 +565,28 @@ function renderResults() {
       <div class="metrics">
         <div class="metric"><b>${pct(r.success, r.n)}%</b><span>完成率</span></div>
         <div class="metric"><b>${secs(r.medianMs)}</b><span>完成時間中位數</span></div>
-        <div class="metric"><b>${r.firstClick == null ? "—" : r.firstClick + "%"}</b><span>第一下就點對</span></div>
-        <div class="metric"><b>${r.misAvg.toFixed(1)}</b><span>平均誤點次數</span></div>
+        <div class="metric"><b>${st.sourceURL ? "—" : (r.firstClick == null ? "—" : r.firstClick + "%")}</b><span>${st.sourceURL ? "點擊分析" : "第一下就點對"}</span></div>
+        <div class="metric"><b>${st.sourceURL ? "—" : r.misAvg.toFixed(1)}</b><span>${st.sourceURL ? "點擊分析" : "平均誤點次數"}</span></div>
         <div class="metric"><b>${r.rating == null ? "—" : r.rating.toFixed(1)}</b><span>難易度（1 很難－5 很簡單）</span></div>
       </div>
-      <details class="heat" data-t="${i}"><summary class="note" style="cursor:pointer">熱點圖</summary>
+      ${st.sourceURL ? `<p class="note">外部網站模式只記錄任務結果、時間與受測者意見，不會記錄點擊或熱點圖。</p>` : `<details class="heat" data-t="${i}"><summary class="note" style="cursor:pointer">熱點圖</summary>
         <div class="row" style="margin:10px 0 6px"><div style="flex:1 1 260px"><label class="f" for="hs${i}">顯示哪個畫面的點擊</label>
           <select id="hs${i}"><option value="__first">每個人的第一下點擊（起始畫面）</option>${screens.map(([k, n]) => `<option value="${esc(k)}">畫面「${esc(k)}」（${n} 次點擊）</option>`).join("")}</select></div></div>
         <p class="legend" style="margin:0 0 8px"><span><span class="dot" style="background:#dc2626"></span>點在可以點的地方</span><span><span class="dot" style="background:#2563eb"></span>誤點（點了不能點的地方）</span></p>
-        <div class="heatArea"></div><p class="note heatStatus" style="margin-top:6px"></p></details>
-      <details><summary class="note" style="cursor:pointer">最常被點的地方與受測者意見</summary>
+        <div class="heatArea"></div><p class="note heatStatus" style="margin-top:6px"></p></details>`}
+      ${st.sourceURL ? (r.comments.length ? `<details><summary class="note" style="cursor:pointer">受測者意見</summary><ul>${r.comments.map(c => `<li>${esc(c)}</li>`).join("")}</ul></details>` : "") : `<details><summary class="note" style="cursor:pointer">最常被點的地方與受測者意見</summary>
         <p class="note" style="margin-top:8px">預期路徑：${esc((t.path || []).join(" → ") || "未設定")}</p>
         <div class="tblwrap"><table class="el"><thead><tr><th>點擊位置</th><th class="n">次數</th></tr></thead><tbody>
         ${r.top.map(x => `<tr><td>${esc(x.label)}${x.miss ? ' <span class="miss">（不能點的地方）</span>' : ""}</td><td class="n">${x.count}</td></tr>`).join("")}</tbody></table></div>
         ${r.comments.length ? `<ul>${r.comments.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
-      </details></div>`;
+      </details>`}</div>`;
   }).join("");
   const roles = [...new Set(S.sessions.map(s => s.role).filter(Boolean))];
   const devs = [...new Set(S.sessions.map(deviceOf))];
   v.innerHTML = `<div class="row" style="margin-bottom:12px;align-items:flex-end">
       <div style="flex:0 1 170px"><label class="f" for="rRole">受測者</label><select id="rRole"><option value="">全部</option>${roles.map(r => `<option${r === S.roleFilter ? " selected" : ""}>${esc(r)}</option>`).join("")}</select></div>
       <div style="flex:0 1 150px"><label class="f" for="rDev">裝置</label><select id="rDev"><option value="">全部</option>${devs.map(r => `<option${r === S.devFilter ? " selected" : ""}>${esc(r)}</option>`).join("")}</select></div>
-      <span class="grow"></span><button class="btn" id="btnRefresh">重新整理</button>${S.me.aiReady ? `<button class="btn primary" id="btnInsight"${sessions.length ? "" : " disabled"}>請 AI 整理發現</button>` : ""}</div>
+      <span class="grow"></span><button class="btn" id="btnRefresh">重新整理</button>${S.me.aiReady && !st.sourceURL ? `<button class="btn primary" id="btnInsight"${sessions.length ? "" : " disabled"}>請 AI 整理發現</button>` : ""}</div>
     <div class="kpis"><span><b>${sessions.length}</b>位受測者</span><span><b>${st.tasks.length}</b>個任務</span></div>
     ${sessions.length ? highlights(st, sessions) : ""}
     <div class="panel hidden" id="insight" style="margin-bottom:14px"></div>
@@ -600,6 +618,7 @@ function renderShare() {
   $("v-share").innerHTML = `<div class="stack" style="max-width:760px">
     <div class="panel stack"><h2>測試連結</h2>
       <p>把這個連結傳給受測者，不用登入、不用安裝，手機、平板、電腦都能打開。</p>
+      ${st.sourceURL ? `<p class="note">此測試會嵌入 ${esc(st.sourceURL)}。受測者需手動標記完成；若目標網站禁止嵌入，請使用「另開網站」按鈕。</p>` : ""}
       <div class="linkbox"><input type="text" id="lnk" readonly value="${esc(link)}"><button class="btn primary" id="cp">複製</button></div>
       <p class="note" id="cpMsg"></p>
       <p class="note">傳連結時建議附一句說明，例如：「大約 5 分鐘，請照著畫面上的任務操作，不用擔心做錯」。</p></div>
@@ -619,6 +638,7 @@ async function bootTester(sid) {
   try { T.st = await api("/api/public/study/" + encodeURIComponent(sid)); }
   catch (e) { card(`<h2>找不到這個測試</h2><p class="note">連結可能有誤，或測試已經結束。請聯絡邀請你的人。</p>`); return; }
   if (!T.st.tasks.length) { card(`<h2>目前沒有進行中的測試</h2><p class="note">請稍後再試，或聯絡邀請你的人。</p>`); return; }
+  if (T.st.url) { $("tOpen").href = T.st.url; $("tOpen").classList.remove("hidden"); }
   document.title = T.st.name;
   welcome();
 }
@@ -627,26 +647,40 @@ function welcome() {
   card(`<h2>${esc(T.st.name)}</h2>
     <p>謝謝你幫忙！接下來會請你完成 ${T.st.tasks.length} 個小任務，大約 5 分鐘。</p>
     <p>我們測的是設計好不好用，不是測你。找不到的時候不用緊張，那正是我們想知道的地方；真的找不到可以按「放棄這題」。</p>
+    ${T.st.url ? `<p class="note">如果網站畫面無法載入，可能不允許嵌入；可按「另開網站」在新分頁操作，再回來標記完成。</p>` : ""}
     <label class="f" for="tRole">你的身分</label><select id="tRole">${ROLES.map(r => `<option>${r}</option>`).join("")}</select>
     <div class="row" style="margin-top:16px"><span class="grow"></span><button class="btn primary" id="tStart">開始</button></div>`);
   $("tStart").onclick = () => { T.role = $("tRole").value; nextTask(); };
 }
 function nextTask() {
   if (T.i >= T.st.tasks.length) return finish();
+  $("tComplete").classList.add("hidden");
   const t = T.st.tasks[T.i];
   setText("tStep", `任務 ${T.i + 1} / ${T.st.tasks.length}`); setText("tText", t.prompt);
   card(`<p class="note">任務 ${T.i + 1} / ${T.st.tasks.length}</p><p class="bigtask">${esc(t.prompt)}</p>
-    <p class="note">完成後畫面會自動跳到下一題。任務會一直顯示在畫面上方。</p>
+    <p class="note">${T.st.url ? "完成後請按上方「我完成了」；任務會一直顯示在畫面上方。" : "完成後畫面會自動跳到下一題。任務會一直顯示在畫面上方。"}</p>
     <div class="row"><span class="grow"></span><button class="btn primary" id="tGo">開始這題</button></div>`);
   $("tGo").onclick = () => {
     hideCard(); T.clicks = []; T.done = false;
     const f = $("tFrame");
-    f.onload = () => { f.contentWindow.postMessage({ __ut: "cond", cond: t.cond }, "*"); T.t0 = performance.now(); f.focus(); };
-    f.srcdoc = withTracker(T.st.html);
+    if (T.st.url) {
+      f.removeAttribute("srcdoc");
+      f.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-same-origin allow-popups");
+      $("tComplete").classList.remove("hidden");
+      f.onload = () => { T.t0 = performance.now(); f.focus(); };
+      f.src = T.st.url;
+    } else {
+      f.removeAttribute("src");
+      f.setAttribute("sandbox", "allow-scripts allow-forms allow-modals");
+      $("tComplete").classList.add("hidden");
+      f.onload = () => { f.contentWindow.postMessage({ __ut: "cond", cond: t.cond }, "*"); T.t0 = performance.now(); f.focus(); };
+      f.srcdoc = withTracker(T.st.html);
+    }
   };
 }
 function endTask(success) {
   if (T.done) return; T.done = true;
+  $("tComplete").classList.add("hidden");
   const t = T.st.tasks[T.i];
   const res = { taskId: t.id, success, timeMs: Math.round(performance.now() - T.t0), clicks: T.clicks.slice(0, 200), rating: null, comment: "" };
   T.results.push(res);
@@ -662,6 +696,7 @@ function endTask(success) {
   $("tNext").onclick = () => { res.rating = rating; res.comment = $("tCmt").value.trim().slice(0, 300); T.i++; nextTask(); };
 }
 $("tGiveUp").onclick = () => { if (!T.done && T.st && $("tOverlay").classList.contains("hidden")) endTask(false); };
+$("tComplete").onclick = () => { if (!T.done && T.st?.url && $("tOverlay").classList.contains("hidden")) endTask(true); };
 $("tShow").onclick = () => { const t = T.st?.tasks[T.i]; if (!t || T.done) return;
   card(`<p class="note">任務 ${T.i + 1} / ${T.st.tasks.length}</p><p class="bigtask">${esc(t.prompt)}</p><div class="row"><span class="grow"></span><button class="btn primary" id="tBack">繼續</button></div>`);
   $("tBack").onclick = hideCard; };
@@ -673,7 +708,7 @@ window.addEventListener("message", e => {
   if (e.data.type === "success") setTimeout(() => endTask(true), 600);
 });
 async function finish() {
-  setText("tStep", ""); setText("tText", ""); $("tFrame").srcdoc = "";
+  setText("tStep", ""); setText("tText", ""); $("tComplete").classList.add("hidden"); $("tFrame").src = "about:blank"; $("tFrame").srcdoc = "";
   const session = { role: T.role, device: { w: innerWidth, h: innerHeight }, results: T.results };
   card(`<h2>送出中…</h2>`);
   try {
