@@ -68,6 +68,7 @@ label.f{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
 .drop{border:1.5px dashed var(--rule);border-radius:12px;padding:26px;text-align:center;background:var(--surface)}
 .file-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .file-pick{display:inline-block;margin:8px 0 2px}
+.upload-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
 /* results */
 .kpis{display:flex;flex-wrap:wrap;gap:6px 26px;margin:0 0 14px;color:var(--muted);font-size:14px}
 .kpis b{color:var(--ink);font-size:20px;margin-right:4px;font-variant-numeric:tabular-nums}
@@ -296,12 +297,11 @@ function renderSetup() {
   if (!S.sid) {
     v.innerHTML = `<div class="panel stack" style="max-width:720px">
       <h2>上傳原型</h2>
-      <p class="note">可以直接選擇整個網站資料夾，也支援單一 HTML 或 ZIP。系統會自動尋找 index.html，並保留 CSS、JavaScript、圖片與字型。</p>
+      <p class="note">在同一個上傳區選擇網站資料夾，或選一個 HTML／ZIP 檔。系統會自動尋找 index.html，並保留 CSS、JavaScript、圖片與字型。</p>
       <div><label class="f" for="nName">測試名稱</label><input type="text" id="nName" placeholder="例如：Kiosk 點餐流程 v2"></div>
       <div><label class="f" for="nGoal">想測什麼（選填，讓 AI 出的任務更準）</label>
         <textarea id="nGoal" rows="3" placeholder="例如：想知道客人能不能自己完成加點、修改甜度冰塊，以及找到結帳按鈕"></textarea></div>
-      <div class="drop"><label class="f" for="nFile">如果你拿到的是 ZIP 或 HTML 檔，請選這裡</label><input class="file-input" type="file" id="nFile" accept=".html,.htm,.zip,text/html,application/zip"><label class="btn primary file-pick" for="nFile">選擇 ZIP／HTML 檔</label><p class="note" id="nFileMsg" style="margin:8px 0 0">尚未選擇檔案</p></div>
-      <div class="drop"><label class="f" for="nFolder">如果你拿到的是已解壓縮的網站資料夾，請選這裡</label><input class="file-input" type="file" id="nFolder" webkitdirectory directory multiple><label class="btn file-pick" for="nFolder">選擇網站資料夾</label><p class="note" id="nFolderMsg" style="margin:8px 0 0">尚未選擇資料夾</p></div>
+      <div class="drop"><p style="margin-bottom:6px"><strong>選擇網站資料</strong></p><p class="note">可選已解壓縮的資料夾，或選一個 ZIP／HTML 檔：</p><input class="file-input" type="file" id="nFile" accept=".html,.htm,.zip,text/html,application/zip"><input class="file-input" type="file" id="nFolder" webkitdirectory directory multiple><div class="upload-actions"><label class="btn primary file-pick" for="nFile">選擇 ZIP／HTML 檔</label><label class="btn file-pick" for="nFolder">選擇網站資料夾</label></div><p class="note" id="nFileMsg" style="margin:8px 0 0">尚未選擇檔案或資料夾</p></div>
       <p class="note">資料夾或上傳檔合計最大 4 MB；ZIP 解壓後最大 16 MB，最多 250 個檔案。</p>
       <p class="note">React／Vue 等專案請先執行建置，再把 dist 或 build 資料夾壓成 ZIP。需要後端 API 的功能不會在原型沙盒中運作。</p>
       <div class="row"><span class="note grow" id="nMsg"></span><button class="btn primary" id="nGo" disabled>上傳並產生任務</button></div>
@@ -309,7 +309,7 @@ function renderSetup() {
     let selectedFile = null, selectedFolder = [];
     $("nFile").onchange = async e => {
       const f = e.target.files[0]; if (!f) return;
-      selectedFile = f; selectedFolder = []; $("nFolder").value = ""; setText("nFolderMsg", "尚未選擇資料夾");
+      selectedFile = f; selectedFolder = []; $("nFolder").value = "";
       setText("nFileMsg", `${f.name}（${Math.round(f.size / 1024)} KB）`);
       if (!$("nName").value) $("nName").value = f.name.replace(/\.(html?|zip)$/i, "");
       $("nGo").disabled = false;
@@ -317,11 +317,11 @@ function renderSetup() {
     };
     $("nFolder").onchange = e => {
       selectedFolder = Array.from(e.target.files || []); if (!selectedFolder.length) return;
-      selectedFile = null; $("nFile").value = ""; setText("nFileMsg", "尚未選擇檔案");
+      selectedFile = null; $("nFile").value = "";
       const total = selectedFolder.reduce((sum, f) => sum + f.size, 0);
       const firstPath = selectedFolder[0].webkitRelativePath || selectedFolder[0].name;
       const folderName = firstPath.split("/")[0];
-      setText("nFolderMsg", `${folderName}（${selectedFolder.length} 個檔案，${Math.round(total / 1024)} KB）`);
+      setText("nFileMsg", `${folderName} 資料夾（${selectedFolder.length} 個檔案，${Math.round(total / 1024)} KB）`);
       if (!$("nName").value) $("nName").value = folderName;
       $("nGo").disabled = false;
       $("nGo").textContent = S.me.aiReady ? "上傳並產生任務" : "上傳";
