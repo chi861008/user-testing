@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import mimetypes
 import os
 import re
@@ -28,6 +29,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from urllib.parse import quote
 from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlunsplit, parse_qsl
 
 from flask import Flask, Response, abort, g, jsonify, request, send_from_directory, session
 
@@ -99,8 +101,13 @@ SCHEMA = [
     "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, study_id TEXT, role TEXT, data TEXT, created_at TEXT)",
     "CREATE TABLE IF NOT EXISTS study_assets(study_id TEXT, path TEXT, mime TEXT, data TEXT, PRIMARY KEY(study_id, path))",
     "CREATE TABLE IF NOT EXISTS study_sources(study_id TEXT PRIMARY KEY, url TEXT)",
+    "CREATE TABLE IF NOT EXISTS study_integrations(study_id TEXT PRIMARY KEY, mode TEXT, origin TEXT, last_seen TEXT)",
+    "CREATE TABLE IF NOT EXISTS instrument_runs(id TEXT PRIMARY KEY, study_id TEXT, kind TEXT, role TEXT, active_task TEXT, started_at TEXT, finished_at TEXT, last_seen TEXT, success INTEGER DEFAULT 0, created_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS instrument_events(id TEXT PRIMARY KEY, run_id TEXT, task_id TEXT, kind TEXT, data TEXT, created_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS screen_images(study_id TEXT, task_id TEXT, screen TEXT, device TEXT, mime TEXT, data TEXT, PRIMARY KEY(study_id,task_id,screen,device))",
     "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_study ON sessions(study_id)",
+    "CREATE INDEX IF NOT EXISTS idx_instrument_events_run ON instrument_events(run_id,task_id)",
 ]
 
 
@@ -178,9 +185,12 @@ def get_study(sid):
 
 
 def study_json(row, with_html=False):
+    integration = study_integration(row["id"])
+    images = db().execute("SELECT task_id,screen,device FROM screen_images WHERE study_id=?", (row["id"],)).fetchall()
     d = {"id": row["id"], "name": row["name"], "goal": row["goal"], "createdAt": row["created_at"],
          "tasks": json.loads(row["tasks"] or "[]"), "size": len(row["html"] or ""),
-         "sourceURL": study_source(row["id"])}
+         "sourceURL": study_source(row["id"]), "integration": integration,
+         "screenshots": [dict(x) for x in images]}
     if with_html:
         d["html"] = row["html"]
     return d
@@ -189,6 +199,44 @@ def study_json(row, with_html=False):
 def study_source(sid):
     row = db().execute("SELECT url FROM study_sources WHERE study_id=?", (sid,)).fetchone()
     return row["url"] if row else ""
+
+
+def study_integration(sid):
+    row = db().execute("SELECT mode,origin,last_seen FROM study_integrations WHERE study_id=?", (sid,)).fetchone()
+    return dict(row) if row else None
+
+
+def target_url(url, run_id):
+    parts = urlsplit(url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    query = [(k, v) for k, v in query if k != "ut_run"]
+    query.append(("ut_run", run_id))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def run_row(run_id):
+    row = db().execute("SELECT * FROM instrument_runs WHERE id=?", (run_id,)).fetchone()
+    if not row:
+        abort(404)
+    if time.time() - datetime.fromisoformat(row["created_at"]).timestamp() > 24 * 3600:
+        abort(404)
+    return row
+
+
+def origin_allowed(run):
+    integration = study_integration(run["study_id"])
+    origin = request.headers.get("Origin", "")
+    return bool(integration and origin == integration["origin"])
+
+
+def instrument_cors(resp, run=None):
+    if run and origin_allowed(run):
+        resp.headers["Access-Control-Allow-Origin"] = request.headers["Origin"]
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def valid_public_url(value):
@@ -383,7 +431,9 @@ def headers(resp):
 def public_study(sid):
     row = get_study(sid)
     tasks = [{"id": t["id"], "prompt": t["prompt"], "cond": t["cond"]} for t in json.loads(row["tasks"] or "[]")]
-    return jsonify(name=row["name"], tasks=tasks, html=row["html"], url=study_source(sid))
+    integration = study_integration(sid)
+    return jsonify(name=row["name"], tasks=tasks, html=row["html"], url=study_source(sid),
+                   mode=integration["mode"] if integration else "legacy")
 
 
 @app.get("/api/public/study/<sid>/asset/<path:asset_path>")
@@ -417,13 +467,137 @@ def public_session(sid):
         assert isinstance(data.get("results"), list)
     except (ValueError, AssertionError, AttributeError):
         return jsonify(error="格式錯誤"), 400
+    run_id = str(data.get("runId") or "")
+    if run_id:
+        run = run_row(run_id)
+        if run["study_id"] != sid or run["kind"] != "test" or run["active_task"] == "__done__":
+            return jsonify(error="測試場次無效"), 400
     data = {"role": str(data.get("role", ""))[:20], "onsite": bool(data.get("onsite")),
             "device": data.get("device") if isinstance(data.get("device"), dict) else {},
             "results": data["results"][:20]}
     sid_ = new_id("x")
     db().execute("INSERT INTO sessions VALUES(?,?,?,?,?)", (sid_, sid, data["role"], json.dumps(data, ensure_ascii=False), now()))
+    if run_id:
+        db().execute("UPDATE instrument_runs SET active_task='__done__',finished_at=? WHERE id=?", (now(), run_id))
     db().commit()
     return jsonify(ok=True, id=sid_)
+
+
+@app.post("/api/public/study/<sid>/run")
+def create_test_run(sid):
+    get_study(sid)
+    if not study_integration(sid):
+        abort(404)
+    body = request.get_json(silent=True) or {}
+    run_id = new_id("r") + secrets.token_urlsafe(12)
+    role = str(body.get("role") or "")[:20]
+    db().execute("INSERT INTO instrument_runs(id,study_id,kind,role,created_at) VALUES(?,?,?,?,?)",
+                 (run_id, sid, "test", role, now()))
+    db().commit()
+    return jsonify(run=run_id, url=target_url(study_source(sid), run_id))
+
+
+@app.post("/api/public/run/<run_id>/task")
+def run_task(run_id):
+    run = run_row(run_id)
+    if run["kind"] != "test" or run["active_task"] == "__done__":
+        abort(404)
+    body = request.get_json(silent=True) or {}
+    task_id = str(body.get("taskId") or "")
+    tasks = json.loads(get_study(run["study_id"])["tasks"] or "[]")
+    if task_id not in [t["id"] for t in tasks]:
+        return jsonify(error="找不到任務"), 400
+    db().execute("UPDATE instrument_runs SET active_task=?,started_at=?,finished_at=NULL,success=0 WHERE id=?",
+                 (task_id, str(time.time()), run_id))
+    db().commit()
+    return jsonify(ok=True)
+
+
+@app.get("/api/public/run/<run_id>/status")
+def run_status(run_id):
+    run = run_row(run_id)
+    return jsonify(ready=bool(run["last_seen"]), activeTask=run["active_task"],
+                   success=bool(run["success"]), lastSeen=run["last_seen"])
+
+
+@app.post("/api/public/run/<run_id>/finish")
+def finish_run_task(run_id):
+    run = run_row(run_id)
+    task_id = run["active_task"]
+    if run["kind"] != "test" or not task_id or run["finished_at"]:
+        return jsonify(error="沒有進行中的任務"), 400
+    rows = db().execute("SELECT kind,data FROM instrument_events WHERE run_id=? AND task_id=? ORDER BY created_at,id",
+                        (run_id, task_id)).fetchall()
+    clicks = [json.loads(r["data"]) for r in rows if r["kind"] == "click"][:200]
+    active_ms = sum(min(10000, max(0, int(json.loads(r["data"]).get("ms", 0)))) for r in rows if r["kind"] == "active")
+    elapsed = max(0, int((time.time() - float(run["started_at"])) * 1000))
+    success = bool(run["success"]) and not bool((request.get_json(silent=True) or {}).get("giveUp"))
+    db().execute("UPDATE instrument_runs SET finished_at=?,active_task=NULL WHERE id=?", (now(), run_id))
+    db().commit()
+    return jsonify(taskId=task_id, success=success, timeMs=elapsed, activeMs=min(active_ms, elapsed), clicks=clicks)
+
+
+@app.route("/api/instrument/<run_id>", methods=["GET", "POST", "OPTIONS"])
+def instrument(run_id):
+    run = run_row(run_id)
+    if not origin_allowed(run):
+        return jsonify(error="不允許的網站來源"), 403
+    if request.method == "OPTIONS":
+        return instrument_cors(Response(status=204), run)
+    if request.method == "GET":
+        if run["active_task"] == "__done__":
+            return instrument_cors(jsonify(activeTask=None, kind=run["kind"], success=False, cond=None, ended=True), run)
+        condition = None
+        if run["active_task"] and run["kind"] == "test":
+            tasks = json.loads(get_study(run["study_id"])["tasks"] or "[]")
+            condition = next((t.get("cond") for t in tasks if t["id"] == run["active_task"]), None)
+        return instrument_cors(jsonify(activeTask=run["active_task"], kind=run["kind"],
+                                       success=bool(run["success"]), cond=condition, ended=False), run)
+    body = request.get_json(silent=True) or {}
+    events = body.get("events")
+    if not isinstance(events, list) or len(events) > 30 or request.content_length and request.content_length > 16000:
+        return instrument_cors(jsonify(error="事件格式錯誤"), run), 400
+    existing = db().execute("SELECT COUNT(*) AS n FROM instrument_events WHERE run_id=?", (run_id,)).fetchone()["n"]
+    if existing >= 1000:
+        return instrument_cors(jsonify(error="事件數量已達上限"), run), 429
+    task_id = run["active_task"]
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") not in {"ready", "click", "active", "complete"}:
+            continue
+        kind = event["type"]
+        if kind != "ready" and (not task_id or run["finished_at"]):
+            continue
+        if kind == "complete" and run["kind"] == "test":
+            db().execute("UPDATE instrument_runs SET success=1 WHERE id=?", (run_id,))
+        if kind in {"click", "active"}:
+            value = event.get("data") if isinstance(event.get("data"), dict) else {}
+            if kind == "click":
+                try:
+                    x, y = float(value.get("x") or 0), float(value.get("y") or 0)
+                    w, h = int(value.get("w") or 0), int(value.get("h") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not math.isfinite(x) or not math.isfinite(y):
+                    continue
+                clean = {"screen": str(value.get("screen") or "")[:80], "element": str(value.get("element") or "")[:100],
+                         "x": min(1, max(0, x)), "y": min(1, max(0, y)),
+                         "w": min(4000, max(0, w)), "h": min(4000, max(0, h)),
+                         "device": "mobile" if w < 600 else "desktop", "interactive": bool(value.get("interactive"))}
+            else:
+                try:
+                    clean = {"ms": min(10000, max(0, int(value.get("ms") or 0)))}
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            event_id = str(event.get("id") or "")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", event_id):
+                event_id = new_id("e")
+            db().execute("INSERT INTO instrument_events VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+                         (run_id + ":" + event_id, run_id, task_id, kind, json.dumps(clean),
+                          datetime.now(timezone.utc).isoformat(timespec="microseconds")))
+    db().execute("UPDATE instrument_runs SET last_seen=? WHERE id=?", (now(), run_id))
+    db().execute("UPDATE study_integrations SET last_seen=? WHERE study_id=?", (now(), run["study_id"]))
+    db().commit()
+    return instrument_cors(jsonify(ok=True), run)
 
 
 # ---------- 管理者 ----------
@@ -467,14 +641,46 @@ def create_url_study():
     host = (urlsplit(url).hostname or "").lower()
     if host == (request.host.split(":", 1)[0] or "").lower():
         return jsonify(error="請輸入要測試的目標網站網址"), 400
+    mode = str(body.get("mode") or "web")
+    if mode not in {"web", "liff"}:
+        return jsonify(error="不支援的網站類型"), 400
+    if mode == "liff" and (host != "liff.line.me" or not urlsplit(url).path.strip("/")):
+        return jsonify(error="請填入 https://liff.line.me/ 開頭的正式 LIFF 網址"), 400
+    endpoint = str(body.get("endpoint") or (url if mode == "web" else "")).strip()
+    if not valid_public_url(endpoint):
+        return jsonify(error="請填入受測網站的公開 HTTPS 網址"), 400
+    parts = urlsplit(endpoint)
+    origin = f"https://{parts.netloc.lower()}"
     sid = new_id("s")
     name = str(body.get("name") or host)[:100]
     goal = str(body.get("goal") or "")[:1000]
     conn = db()
     conn.execute("INSERT INTO studies VALUES(?,?,?,?,?,?)", (sid, name, goal, "", "[]", now()))
     conn.execute("INSERT INTO study_sources VALUES(?,?)", (sid, url))
+    conn.execute("INSERT INTO study_integrations VALUES(?,?,?,NULL)", (sid, mode, origin))
     conn.commit()
     return jsonify(id=sid, url=url)
+
+
+@app.post("/api/studies/<sid>/integration")
+@admin_required
+def enable_integration(sid):
+    get_study(sid)
+    url = study_source(sid)
+    if not url:
+        return jsonify(error="這不是網址測試"), 400
+    body = request.get_json(silent=True) or {}
+    mode = str(body.get("mode") or "web")
+    if mode not in {"web", "liff"} or (mode == "liff" and urlsplit(url).hostname != "liff.line.me"):
+        return jsonify(error="網站類型與測試網址不符"), 400
+    endpoint = str(body.get("endpoint") or (url if mode == "web" else "")).strip()
+    if not valid_public_url(endpoint):
+        return jsonify(error="請填入受測網站的公開 HTTPS 網址"), 400
+    origin = f"https://{urlsplit(endpoint).netloc.lower()}"
+    db().execute("INSERT INTO study_integrations(study_id,mode,origin) VALUES(?,?,?) ON CONFLICT(study_id) DO UPDATE SET mode=excluded.mode,origin=excluded.origin,last_seen=NULL",
+                 (sid, mode, origin))
+    db().commit()
+    return jsonify(ok=True, mode=mode, origin=origin)
 
 
 @app.post("/api/studies/import")
@@ -575,8 +781,9 @@ def save_tasks(sid):
     for t in tasks[:10]:
         cond = t.get("cond") or {}
         clean.append({"id": str(t.get("id") or new_id("t"))[:40], "prompt": str(t.get("prompt", ""))[:500],
-                      "cond": {"type": "click" if cond.get("type") == "click" else "visible", "text": str(cond.get("text", ""))[:200]},
-                      "path": [str(p)[:80] for p in (t.get("path") or [])][:15]})
+                      "cond": {"type": str(cond.get("type") or "visible")[:20], "text": str(cond.get("text", ""))[:200]},
+                      "path": [str(p)[:100] for p in (t.get("path") or [])][:15],
+                      "paths": [[str(p)[:100] for p in route[:20]] for route in (t.get("paths") or [])[:5] if isinstance(route, list)]})
     db().execute("UPDATE studies SET tasks=? WHERE id=?", (json.dumps(clean, ensure_ascii=False), sid))
     db().commit()
     return jsonify(tasks=clean)
@@ -588,6 +795,10 @@ def delete_study(sid):
     db().execute("DELETE FROM sessions WHERE study_id=?", (sid,))
     db().execute("DELETE FROM study_assets WHERE study_id=?", (sid,))
     db().execute("DELETE FROM study_sources WHERE study_id=?", (sid,))
+    db().execute("DELETE FROM study_integrations WHERE study_id=?", (sid,))
+    db().execute("DELETE FROM instrument_events WHERE run_id IN (SELECT id FROM instrument_runs WHERE study_id=?)", (sid,))
+    db().execute("DELETE FROM instrument_runs WHERE study_id=?", (sid,))
+    db().execute("DELETE FROM screen_images WHERE study_id=?", (sid,))
     db().execute("DELETE FROM studies WHERE id=?", (sid,))
     db().commit()
     return jsonify(ok=True)
@@ -598,6 +809,73 @@ def delete_study(sid):
 def list_sessions(sid):
     rows = db().execute("SELECT * FROM sessions WHERE study_id=? ORDER BY created_at", (sid,)).fetchall()
     return jsonify([{**json.loads(r["data"]), "id": r["id"], "at": r["created_at"]} for r in rows])
+
+
+@app.post("/api/studies/<sid>/recordings")
+@admin_required
+def create_recording(sid):
+    study = get_study(sid)
+    if not study_integration(sid):
+        abort(404)
+    task_id = str((request.get_json(silent=True) or {}).get("taskId") or "")
+    if task_id not in [t["id"] for t in json.loads(study["tasks"] or "[]")]:
+        return jsonify(error="請先儲存任務"), 400
+    run_id = new_id("r") + secrets.token_urlsafe(12)
+    db().execute("INSERT INTO instrument_runs(id,study_id,kind,role,active_task,started_at,created_at) VALUES(?,?,?,?,?,?,?)",
+                 (run_id, sid, "record", "", task_id, str(time.time()), now()))
+    db().commit()
+    return jsonify(run=run_id, url=target_url(study_source(sid), run_id))
+
+
+@app.post("/api/studies/<sid>/recordings/<run_id>/finish")
+@admin_required
+def finish_recording(sid, run_id):
+    run = run_row(run_id)
+    if run["study_id"] != sid or run["kind"] != "record":
+        abort(404)
+    rows = db().execute("SELECT data FROM instrument_events WHERE run_id=? AND kind='click' ORDER BY created_at,id", (run_id,)).fetchall()
+    recorded = [json.loads(row["data"]) for row in rows]
+    path = [item.get("element", "") for item in recorded]
+    path = [p for i, p in enumerate(path) if p and (i == 0 or p != path[i - 1])][:20]
+    db().execute("UPDATE instrument_runs SET active_task=NULL,finished_at=? WHERE id=?", (now(), run_id))
+    db().commit()
+    return jsonify(path=path, screens=sorted({item.get("screen", "") for item in recorded if item.get("screen")}), ready=bool(run["last_seen"]))
+
+
+@app.post("/api/studies/<sid>/screenshots")
+@admin_required
+def upload_screen(sid):
+    get_study(sid)
+    task_id = request.form.get("taskId", "")[:40]
+    screen = request.form.get("screen", "")[:80]
+    device = request.form.get("device", "")
+    tasks = json.loads(get_study(sid)["tasks"] or "[]")
+    if task_id not in [t["id"] for t in tasks] or not screen or device not in {"mobile", "desktop"}:
+        return jsonify(error="請選擇任務、畫面與裝置"), 400
+    upload = request.files.get("file")
+    raw = upload.read(2 * 1024 * 1024 + 1) if upload else b""
+    if not raw or len(raw) > 2 * 1024 * 1024:
+        return jsonify(error="請上傳小於 2 MB 的 PNG、JPEG 或 WebP 圖片"), 400
+    mime = "image/png" if raw.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if raw.startswith(b"\xff\xd8\xff") else "image/webp" if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP" else ""
+    if not mime:
+        return jsonify(error="只支援 PNG、JPEG 或 WebP 圖片"), 400
+    db().execute("INSERT INTO screen_images VALUES(?,?,?,?,?,?) ON CONFLICT(study_id,task_id,screen,device) DO UPDATE SET mime=excluded.mime,data=excluded.data",
+                 (sid, task_id, screen, device, mime, base64.b64encode(raw).decode()))
+    db().commit()
+    return jsonify(ok=True)
+
+
+@app.get("/api/studies/<sid>/screenshots/<task_id>/<device>")
+@admin_required
+def get_screen(sid, task_id, device):
+    screen = request.args.get("screen", "")
+    row = db().execute("SELECT mime,data FROM screen_images WHERE study_id=? AND task_id=? AND screen=? AND device=?",
+                       (sid, task_id, screen, device)).fetchone()
+    if not row:
+        abort(404)
+    resp = Response(base64.b64decode(row["data"]), mimetype=row["mime"])
+    resp.headers["Cache-Control"] = "private, no-store"
+    return resp
 
 
 @app.delete("/api/sessions/<xid>")

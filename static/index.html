@@ -231,7 +231,7 @@ function withTracker(html) {
 }
 
 /* ============ admin ============ */
-const S = { me: null, list: [], sid: "", study: null, sessions: [], tab: "setup", trial: null, roleFilter: "", devFilter: "", rec: null, recMsg: null };
+const S = { me: null, list: [], sid: "", study: null, sessions: [], tab: "setup", trial: null, roleFilter: "", devFilter: "", rec: null, extRec: null, recMsg: null };
 
 function showLogin() {
   $("passwordOverlay").classList.add("hidden");
@@ -273,7 +273,7 @@ async function bootAdmin() {
 }
 async function loadList() { S.list = await api("/api/studies"); }
 async function openStudy(sid) {
-  S.sid = sid || ""; S.study = null; S.sessions = []; S.trial = null; S.rec = null; S.recMsg = null;
+  S.sid = sid || ""; S.study = null; S.sessions = []; S.trial = null; S.rec = null; S.extRec = null; S.recMsg = null;
   if (sid) { S.study = await api("/api/studies/" + sid); S.sessions = await api(`/api/studies/${sid}/sessions`); }
   renderAdmin();
 }
@@ -302,12 +302,17 @@ function renderSetup() {
       <div><label class="f" for="nGoal">想測什麼（選填，讓 AI 出的任務更準）</label>
         <textarea id="nGoal" rows="3" placeholder="例如：想知道客人能不能自己完成加點、修改甜度冰塊，以及找到結帳按鈕"></textarea></div>
       <div class="drop"><p style="margin-bottom:6px"><strong>選擇網站資料</strong></p><p class="note">可選已解壓縮的資料夾，或選一個 ZIP／HTML 檔：</p><input class="file-input" type="file" id="nFile" accept=".html,.htm,.zip,text/html,application/zip"><input class="file-input" type="file" id="nFolder" webkitdirectory directory multiple><div class="upload-actions"><label class="btn primary file-pick" for="nFile">選擇 ZIP／HTML 檔</label><label class="btn file-pick" for="nFolder">選擇網站資料夾</label></div><p class="note" id="nFileMsg" style="margin:8px 0 0">尚未選擇檔案或資料夾</p></div>
-      <div class="drop"><label class="f" for="nUrl">或輸入已部署網站網址（公開 HTTPS）</label><div class="row"><input id="nUrl" type="url" placeholder="https://example.com" style="flex:1"><button class="btn" id="nUseUrl">使用這個網址</button></div><p class="note">受測者會在測試頁中開啟網站。需要網站允許被嵌入；這種模式以受測者手動標記完成，不收集點擊熱點。</p></div>
+      <div class="drop"><label class="f" for="nUrl">或輸入已部署網站網址（公開 HTTPS）</label>
+        <select id="nMode" style="margin-bottom:8px"><option value="web">一般網站（可用 Google 登入）</option><option value="liff">LINE LIFF 網站</option></select>
+        <div class="row"><input id="nUrl" type="url" placeholder="https://example.com" style="flex:1"><button class="btn" id="nUseUrl">使用這個網址</button></div>
+        <div id="nEndpointBox" class="hidden" style="margin-top:8px"><label class="f" for="nEndpoint">LIFF 實際網站的網址（用於接收追蹤事件）</label><input id="nEndpoint" type="url" placeholder="https://your-liff-site.example.com"></div>
+        <p class="note">一般網站填網站網址；LIFF 填 https://liff.line.me/...。建立後請在受測網站加入追蹤程式，才會有自動分析。</p></div>
       <p class="note">資料夾或上傳檔合計最大 4 MB；ZIP 解壓後最大 16 MB，最多 250 個檔案。</p>
       <p class="note">React／Vue 等專案請先執行建置，再把 dist 或 build 資料夾壓成 ZIP。需要後端 API 的功能不會在原型沙盒中運作。</p>
       <div class="row"><span class="note grow" id="nMsg"></span><button class="btn primary" id="nGo" disabled>上傳並產生任務</button></div>
     </div>`;
     let selectedFile = null, selectedFolder = [];
+    $("nMode").onchange = () => { $("nEndpointBox").classList.toggle("hidden", $("nMode").value !== "liff"); $("nUrl").placeholder = $("nMode").value === "liff" ? "https://liff.line.me/你的 LIFF ID" : "https://example.com"; };
     $("nFile").onchange = async e => {
       const f = e.target.files[0]; if (!f) return;
       selectedFile = f; selectedFolder = []; $("nFolder").value = "";
@@ -332,7 +337,7 @@ function renderSetup() {
       if (!url) { setText("nMsg", "請先輸入網站網址。"); return; }
       $("nUseUrl").disabled = true; setText("nMsg", "正在建立網址測試…");
       try {
-        const { id } = await api("/api/studies/url", { method: "POST", body: { name: $("nName").value.trim(), goal: $("nGoal").value.trim(), url } });
+        const { id } = await api("/api/studies/url", { method: "POST", body: { name: $("nName").value.trim(), goal: $("nGoal").value.trim(), url, mode: $("nMode").value, endpoint: $("nEndpoint").value.trim() } });
         await loadList(); await openStudy(id);
       } catch (e) { setText("nMsg", e.message); $("nUseUrl").disabled = false; }
     };
@@ -358,21 +363,36 @@ function renderSetup() {
   }
   const st = S.study; if (!st) { v.innerHTML = `<p class="note">讀取中…</p>`; return; }
   v.innerHTML = `<div class="split">
-    <div class="frameBox"><div class="frameBar"><span class="grow" id="pvLabel">原型預覽（可以直接操作）</span><button class="btn small" id="pvReset">重新載入</button></div>
-      <iframe id="pv" title="原型預覽" sandbox="allow-scripts allow-forms allow-modals"></iframe><p id="urlPreviewNote" class="note${st.sourceURL ? "" : " hidden"}" style="padding:8px 12px;margin:0">若網站無法載入，可能禁止嵌入。外部網址模式不支援自動錄製或點擊熱點。</p></div>
+    <div class="frameBox"><div class="frameBar"><span class="grow" id="pvLabel">${st.sourceURL ? "受測網站設定" : "原型預覽（可以直接操作）"}</span><button class="btn small${st.sourceURL ? " hidden" : ""}" id="pvReset">重新載入</button></div>
+      ${st.sourceURL ? `<div class="stack" style="padding:16px"><p><a href="${esc(st.sourceURL)}" target="_blank" rel="noopener">開啟受測網站 ↗</a></p>
+        ${!st.integration ? `<div class="panel stack"><p>這是既有的網址測試。啟用追蹤後才能自動記錄操作。</p><select id="upgradeMode"><option value="web">一般網站</option><option value="liff"${st.sourceURL.startsWith("https://liff.line.me/") ? " selected" : ""}>LINE LIFF</option></select><input id="upgradeEndpoint" type="url" placeholder="LIFF 實際網站網址（一般網站可留空）"><button class="btn primary" id="upgradeIntegration">啟用追蹤</button><p class="note" id="upgradeMsg"></p></div>` : ""}
+        <p class="note">類型：${st.integration?.mode === "liff" ? "LINE LIFF" : "一般網站"}；追蹤來源：${esc(st.integration?.origin || "尚未設定")}</p>
+        ${st.integration ? `<div class="row"><input id="integrationEndpoint" type="url" value="${esc(st.integration.origin)}" aria-label="受測網站實際網址" style="flex:1"><button class="btn small" id="saveIntegrationEndpoint">更新追蹤網域</button></div><p class="note" id="integrationMsg">若網站登入後跳到另一個網域，請填實際執行追蹤程式的網址。</p>` : ""}
+        <p class="note">追蹤狀態：<strong>${st.integration?.last_seen ? "已收到事件（" + esc(st.integration.last_seen) + "）" : "尚未收到事件"}</strong></p>
+        <p>請在受測網站的每個頁面加入這段程式，並重新部署：</p><code class="rc">${esc('<scr' + 'ipt src="' + location.origin + '/static/ut-sdk.js" defer></scr' + 'ipt>')}</code>
+        <p class="note">LIFF 專案請在實際網站加入，並從正式 LIFF 網址進入。完成條件可選「畫面標記」：在成功畫面放置 data-ut-complete 屬性；或由網站程式呼叫 UserTesting.complete("事件名稱")。重要按鈕可加 data-ut-id，讓路徑在改版後更穩定。</p>
+        <p class="note">追蹤程式只在受測者使用測試連結時啟動；不收集輸入值、登入權杖或畫面截圖。</p></div>` : `<iframe id="pv" title="原型預覽" sandbox="allow-scripts allow-forms allow-modals"></iframe>`}</div>
     <div>
       <div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">測試任務</h2>
         <button class="btn small" id="btnRegen"${S.me.aiReady && !st.sourceURL ? "" : " disabled"}>重新產生</button><button class="btn small" id="btnAddTask">新增任務</button></div>
-      <p class="note">${st.sourceURL ? "為每位受測者手動建立任務；受測者會自行標記完成或放棄。" : "每個任務都按一次「試做」：在左邊照著做，確認出現「偵測到完成」，代表自動判斷設定正確。"}</p>
+      <p class="note">${st.sourceURL ? "先儲存任務，再用測試帳號錄製一條或多條可接受路徑，並設定完成條件。" : "每個任務都按一次「試做」：在左邊照著做，確認出現「偵測到完成」，代表自動判斷設定正確。"}</p>
       <div id="taskList"></div>
       <div class="row" style="margin-top:12px"><span class="note grow" id="saveMsg"></span><button class="btn primary" id="btnSaveTasks">儲存任務</button></div>
       <p class="note" style="margin-top:14px">${st.goal ? "測試目標：" + esc(st.goal) : ""}</p>
       <button class="btn small danger" id="btnDelStudy">刪除這個測試</button>
     </div></div>`;
-  resetPreview();
+  if (!st.sourceURL) resetPreview();
+  if ($("upgradeIntegration")) $("upgradeIntegration").onclick = async () => {
+    try { await api(`/api/studies/${S.sid}/integration`, { method: "POST", body: { mode: $("upgradeMode").value, endpoint: $("upgradeEndpoint").value.trim() } }); await openStudy(S.sid); }
+    catch (e) { setText("upgradeMsg", e.message); }
+  };
+  if ($("saveIntegrationEndpoint")) $("saveIntegrationEndpoint").onclick = async () => {
+    try { await api(`/api/studies/${S.sid}/integration`, { method: "POST", body: { mode: st.integration.mode, endpoint: $("integrationEndpoint").value.trim() } }); await openStudy(S.sid); }
+    catch (e) { setText("integrationMsg", e.message); }
+  };
   $("pvReset").onclick = () => { S.trial = null; if (S.rec) { S.rec = null; renderTasks(); } setText("pvLabel", "原型預覽（可以直接操作）"); resetPreview(); };
   renderTasks();
-  $("btnAddTask").onclick = () => { if (S.rec) return; readTasks(); st.tasks.push({ id: uid("t"), prompt: "", cond: { type: "visible", text: "" }, path: [] }); renderTasks(); };
+  $("btnAddTask").onclick = () => { if (S.rec) return; readTasks(); st.tasks.push({ id: uid("t"), prompt: "", cond: { type: st.sourceURL ? "marker" : "visible", text: "" }, path: [], paths: [] }); renderTasks(); };
   $("btnSaveTasks").onclick = saveTasks;
   $("btnRegen").onclick = async () => {
     if (!confirm("重新產生會取代目前的任務，確定嗎？")) return;
@@ -405,16 +425,27 @@ function renderTasks() {
     const rec = S.rec && S.rec.i === i;
     return `<div class="task" data-i="${i}">
     <div class="row" style="margin-bottom:6px"><span class="num">任務 ${i + 1}</span><span class="grow"></span>
-      ${st.sourceURL ? "" : `<span class="ok hidden" data-ok="${i}">偵測到完成</span><button class="btn small${rec ? " primary" : ""}" data-rec="${i}"${S.rec && !rec ? " disabled" : ""}>${rec ? "停止錄製" : "錄製"}</button><button class="btn small" data-trial="${i}"${S.rec ? " disabled" : ""}>試做</button>`}
+      ${st.sourceURL ? `<button class="btn small${S.extRec?.i === i ? " primary" : ""}" data-erec="${i}">${S.extRec?.i === i ? "完成錄製" : "錄製可接受路徑"}</button>` : `<span class="ok hidden" data-ok="${i}">偵測到完成</span><button class="btn small${rec ? " primary" : ""}" data-rec="${i}"${S.rec && !rec ? " disabled" : ""}>${rec ? "停止錄製" : "錄製"}</button><button class="btn small" data-trial="${i}"${S.rec ? " disabled" : ""}>試做</button>`}
       <button class="btn small" data-up="${i}" aria-label="上移"${i && !S.rec ? "" : " disabled"}>↑</button><button class="btn small" data-del="${i}"${S.rec ? " disabled" : ""}>刪除</button></div>
-    ${st.sourceURL ? `<p class="note">受測者會自行標記完成或放棄。</p>` : `<p class="note${rec || S.recMsg?.i === i ? "" : " hidden"}" data-recl="${i}" aria-live="polite">${rec ? recText() : esc(S.recMsg?.i === i ? S.recMsg.text : "")}</p>`}
+    ${st.sourceURL ? `<p class="note" data-extmsg="${i}">${S.extRec?.i === i ? `正在錄製。請在受測網站操作，完成後回來按「完成錄製」。<a href="${esc(S.extRec.url)}" target="_blank" rel="noopener">重新開啟</a>` : "錄製前請先儲存任務，並確認網站已安裝追蹤程式。"}</p>` : `<p class="note${rec || S.recMsg?.i === i ? "" : " hidden"}" data-recl="${i}" aria-live="polite">${rec ? recText() : esc(S.recMsg?.i === i ? S.recMsg.text : "")}</p>`}
     <label class="f" for="tp${i}">給受測者看的說明</label><textarea id="tp${i}" rows="2" data-k="prompt">${esc(t.prompt)}</textarea>
-    ${st.sourceURL ? "" : `<div class="cond" style="margin-top:8px"><div><label class="f" for="tc${i}">完成條件</label>
+    ${st.sourceURL ? `<div class="cond" style="margin-top:8px"><div><label class="f" for="tc${i}">自動完成條件</label><select id="tc${i}" data-k="type">
+      <option value="marker"${t.cond?.type === "marker" ? " selected" : ""}>畫面標記 data-ut-complete</option>
+      <option value="event"${t.cond?.type === "event" ? " selected" : ""}>程式呼叫 complete()</option>
+      <option value="path"${t.cond?.type === "path" ? " selected" : ""}>到達網址路徑</option>
+      <option value="click"${t.cond?.type === "click" ? " selected" : ""}>點擊元素代號</option></select></div>
+      <div><label class="f" for="tt${i}">標記／事件名稱／網址路徑／元素代號</label><input type="text" id="tt${i}" data-k="text" value="${esc(t.cond?.text || "")}" placeholder="例如 checkout-done 或 /success"></div></div>
+      <label class="f" for="tpaths${i}" style="margin-top:8px">可接受路徑（每行一個元素代號；空行分隔不同路徑）</label>
+      <textarea id="tpaths${i}" rows="4" data-k="paths">${esc((t.paths || []).map(route => route.join("\n")).join("\n\n"))}</textarea>
+      <div class="row" style="margin-top:8px"><input type="text" data-screen="${i}" placeholder="畫面代號，例如 /dashboard" style="flex:1 1 150px"><select data-device="${i}" style="width:auto"><option value="mobile">手機</option><option value="desktop">電腦</option></select><input type="file" data-image="${i}" accept="image/png,image/jpeg,image/webp" style="width:170px"><button class="btn small" data-upload="${i}">上傳全頁截圖作熱點底圖</button></div>
+      <p class="note">已上傳：${(st.screenshots || []).filter(x => x.task_id === t.id).map(x => esc(`${x.screen}／${x.device}`)).join("、") || "無"}</p>` : `<div class="cond" style="margin-top:8px"><div><label class="f" for="tc${i}">完成條件</label>
       <select id="tc${i}" data-k="type"><option value="visible"${t.cond.type === "visible" ? " selected" : ""}>畫面出現文字</option><option value="click"${t.cond.type === "click" ? " selected" : ""}>點了含這段文字的按鈕</option></select></div>
       <div><label class="f" for="tt${i}">文字</label><input type="text" id="tt${i}" data-k="text" value="${esc(t.cond.text)}"></div></div>
     <label class="f" for="tpa${i}" style="margin-top:8px">預期路徑（一行一步，寫要點的按鈕文字）</label><textarea id="tpa${i}" rows="${Math.max(3, (t.path || []).length + 1)}" data-k="path">${esc((t.path || []).join("\n"))}</textarea>`}
   </div>`; }).join("");
   el.querySelectorAll("[data-rec]").forEach(b => b.onclick = () => (S.rec ? stopRecording() : startRecording(+b.dataset.rec)));
+  el.querySelectorAll("[data-erec]").forEach(b => b.onclick = () => externalRecording(+b.dataset.erec));
+  el.querySelectorAll("[data-upload]").forEach(b => b.onclick = () => uploadScreenshot(+b.dataset.upload));
   el.querySelectorAll("[data-trial]").forEach(b => b.onclick = () => {
     readTasks(); const i = +b.dataset.trial, t = st.tasks[i];
     el.querySelectorAll("[data-ok]").forEach(x => x.classList.add("hidden"));
@@ -456,17 +487,56 @@ function readTasks() {
   document.querySelectorAll("#taskList .task").forEach(box => {
     const t = S.study.tasks[+box.dataset.i]; if (!t) return;
     t.prompt = box.querySelector('[data-k="prompt"]').value.trim();
-    if (S.study.sourceURL) return;
+    if (S.study.sourceURL) {
+      t.cond = { type: box.querySelector('[data-k="type"]').value, text: box.querySelector('[data-k="text"]').value.trim() };
+      t.paths = box.querySelector('[data-k="paths"]').value.split(/\n\s*\n/).map(group => group.split("\n").map(x => x.trim()).filter(Boolean)).filter(x => x.length);
+      return;
+    }
     t.cond = { type: box.querySelector('[data-k="type"]').value, text: box.querySelector('[data-k="text"]').value.trim() };
     t.path = box.querySelector('[data-k="path"]').value.split("\n").map(s => s.trim()).filter(Boolean);
   });
 }
 async function saveTasks() {
   readTasks();
-  const bad = S.study.tasks.findIndex(t => !t.prompt || (!S.study.sourceURL && !t.cond.text));
-  if (bad >= 0) { setText("saveMsg", `任務 ${bad + 1} 的說明${S.study.sourceURL ? "" : "或完成條件"}是空的。`); return; }
+  const bad = S.study.tasks.findIndex(t => !t.prompt || (S.study.integration && !t.cond.text) || (!S.study.sourceURL && !t.cond.text));
+  if (bad >= 0) { setText("saveMsg", `任務 ${bad + 1} 的說明或完成條件是空的。`); return; }
   try { const r = await api(`/api/studies/${S.sid}/tasks`, { method: "PUT", body: { tasks: S.study.tasks } }); S.study.tasks = r.tasks; setText("saveMsg", "已儲存。"); }
   catch (e) { setText("saveMsg", e.message); }
+}
+async function externalRecording(i) {
+  if (S.extRec?.i === i) {
+    try {
+      const r = await api(`/api/studies/${S.sid}/recordings/${S.extRec.run}/finish`, { method: "POST" });
+      readTasks();
+      if (r.path.length) S.study.tasks[i].paths = [...(S.study.tasks[i].paths || []), r.path];
+      S.extRec = null; renderTasks();
+      setText("saveMsg", r.path.length ? `已記下 ${r.path.length} 步；畫面代號：${(r.screens || []).join("、") || "無"}。請按「儲存任務」。` : "沒有收到點擊。請確認網站已安裝追蹤程式，並從錄製連結開啟。");
+    } catch (e) { setText("saveMsg", e.message); }
+    return;
+  }
+  if (S.extRec) { setText("saveMsg", "請先完成另一題的錄製。"); return; }
+  await saveTasks();
+  if (S.study.tasks[i].prompt === "") return;
+  const opened = window.open("about:blank", "_blank");
+  try {
+    const r = await api(`/api/studies/${S.sid}/recordings`, { method: "POST", body: { taskId: S.study.tasks[i].id } });
+    S.extRec = { i, run: r.run, url: r.url };
+    if (opened) opened.location = r.url;
+    renderTasks(); setText("saveMsg", "錄製連結已開啟；操作完成後回來按「完成錄製」。");
+  } catch (e) { if (opened) opened.close(); setText("saveMsg", e.message); }
+}
+async function uploadScreenshot(i) {
+  const box = document.querySelector(`#taskList .task[data-i="${i}"]`);
+  const file = box.querySelector("[data-image]").files[0], screen = box.querySelector("[data-screen]").value.trim();
+  if (!file || !screen) { setText("saveMsg", "請先填畫面代號並選擇圖片。"); return; }
+  const form = new FormData(); form.append("taskId", S.study.tasks[i].id); form.append("screen", screen);
+  form.append("device", box.querySelector("[data-device]").value); form.append("file", file);
+  try {
+    await api(`/api/studies/${S.sid}/screenshots`, { method: "POST", body: form });
+    readTasks();
+    const fresh = await api(`/api/studies/${S.sid}`);
+    S.study.screenshots = fresh.screenshots; renderTasks(); setText("saveMsg", "熱點底圖已上傳。");
+  } catch (e) { setText("saveMsg", e.message); }
 }
 window.addEventListener("message", e => {
   const pv = $("pv"), d = e.data;
@@ -482,8 +552,36 @@ window.addEventListener("message", e => {
 });
 
 /* ---------- results ---------- */
+function routeErrors(clicks, paths) {
+  if (!paths?.length) return null;
+  return Math.min(...paths.map(route => {
+    let next = 0, errors = 0;
+    for (const c of clicks || []) {
+      if (!c.interactive) continue;
+      if (c.element === route[next]) next++;
+      else errors++;
+    }
+    return errors + Math.max(0, route.length - next);
+  }));
+}
 function statsFor(task, sessions) {
   const rs = sessions.map(s => (s.results || []).find(r => r.taskId === task.id)).filter(Boolean);
+  if (S.study?.integration) {
+    const n = rs.length, succ = rs.filter(r => r.success), paths = task.paths || [];
+    const err = rs.map(r => routeErrors(r.clicks, paths));
+    const measured = err.filter(x => x != null);
+    const direct = paths.length ? succ.filter(r => routeErrors(r.clicks, paths) === 0) : succ;
+    const counts = new Map(); rs.forEach(r => (r.clicks || []).forEach(c => counts.set(c.element || "（未知元素）", (counts.get(c.element || "（未知元素）") || 0) + 1)));
+    const ratings = rs.map(r => r.rating).filter(Boolean);
+    return { n, success: succ.length, direct: direct.length, indirect: succ.length - direct.length, gaveUp: n - succ.length,
+      medianMs: median(succ.map(r => r.timeMs)), activeMedianMs: median(succ.map(r => r.activeMs).filter(x => x != null)),
+      firstClick: paths.length ? pct(rs.filter(r => paths.some(p => p[0] === r.clicks?.[0]?.element)).length, rs.filter(r => r.clicks?.length).length) : null,
+      misAvg: measured.length ? measured.reduce((a, b) => a + b, 0) / measured.length : 0,
+      deviationRate: measured.length ? pct(measured.filter(x => x > 0).length, measured.length) : null,
+      rating: ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : null,
+      top: [...counts.entries()].sort((a,b) => b[1]-a[1]).slice(0,8).map(([label,count]) => ({ label, count, miss:false })),
+      comments: rs.map(r => r.comment).filter(Boolean) };
+  }
   const n = rs.length, opt = Math.max(1, (task.path || []).length);
   const succ = rs.filter(r => r.success), direct = succ.filter(r => (r.clicks || []).length <= opt);
   const first = (task.path || [])[0] || "";
@@ -521,7 +619,7 @@ function highlights(st, sessions) {
 function heatChoices(task, sessions) {
   const rs = sessions.map(s => (s.results || []).find(r => r.taskId === task.id)).filter(Boolean);
   const counts = new Map();
-  rs.forEach(r => (r.clicks || []).forEach(c => { if (c.screen) counts.set(c.screen, (counts.get(c.screen) || 0) + 1); }));
+  rs.forEach(r => (r.clicks || []).forEach(c => { if (c.screen) { const key = S.study?.integration ? `${c.screen}|||${c.device || "desktop"}` : c.screen; counts.set(key, (counts.get(key) || 0) + 1); } }));
   return { rs, screens: [...counts.entries()].sort((a, b) => b[1] - a[1]) };
 }
 function heatPayload(task, sessions, key) {
@@ -536,6 +634,18 @@ function heatPayload(task, sessions, key) {
 const HEAT = new Map();
 function showHeat(box, task, sessions) {
   const key = box.querySelector("select").value, area = box.querySelector(".heatArea"), status = box.querySelector(".heatStatus");
+  if (S.study?.integration) {
+    const [screen, device] = key.split("|||");
+    const rs = sessions.map(s => (s.results || []).find(r => r.taskId === task.id)).filter(Boolean);
+    const points = rs.flatMap(r => (r.clicks || []).filter(c => c.screen === screen && c.device === device));
+    const image = (S.study.screenshots || []).find(x => x.task_id === task.id && x.screen === screen && x.device === device);
+    if (!image) { area.innerHTML = `<p class="note">這個畫面有 ${points.length} 個點擊。請到「設定任務」上傳畫面「${esc(screen)}」的${device === "mobile" ? "手機" : "電腦"}截圖，才能疊加熱點圖。</p>`; status.textContent = ""; return; }
+    const src = `/api/studies/${encodeURIComponent(S.sid)}/screenshots/${encodeURIComponent(task.id)}/${device}?screen=${encodeURIComponent(screen)}`;
+    area.innerHTML = `<div style="position:relative;width:min(100%,640px)"><img src="${src}" alt="${esc(screen)} 畫面截圖" style="display:block;width:100%;height:auto;border:1px solid var(--rule);border-radius:8px"><div class="heatDots" style="position:absolute;inset:0;pointer-events:none"></div></div>`;
+    area.querySelector(".heatDots").innerHTML = points.map(c => `<span style="position:absolute;left:${Math.round(c.x*1000)/10}%;top:${Math.round(c.y*1000)/10}%;width:18px;height:18px;margin:-9px;border-radius:50%;background:${c.interactive ? "#dc262688" : "#2563eb88"};box-shadow:0 0 0 5px ${c.interactive ? "#dc262633" : "#2563eb33"}"></span>`).join("");
+    status.textContent = `共 ${points.length} 個點擊。位置依全頁截圖與受測裝置的畫面比例顯示；內部捲動區域可能有誤差。`;
+    return;
+  }
   const pl = heatPayload(task, sessions, key);
   area.innerHTML = `<iframe class="heatFrame" title="熱點圖" sandbox="allow-scripts" style="width:100%;height:520px;border:1px solid var(--rule);border-radius:8px;background:#fff"></iframe>`;
   const f = area.querySelector("iframe");
@@ -559,23 +669,24 @@ function renderResults() {
     const seg = (n, color) => n ? `<i style="width:${pct(n, r.n)}%;background:${color}"></i>` : "";
     const { screens } = heatChoices(t, sessions);
     return `<div class="tcard"><h3>任務 ${i + 1}：${esc(t.prompt)}</h3>
-      <div class="bar" role="img" aria-label="直接成功 ${r.direct}、繞路成功 ${r.indirect}、放棄 ${r.gaveUp}">${seg(r.direct, "var(--good)")}${seg(r.indirect, "var(--warn)")}${seg(r.gaveUp, "var(--bad)")}</div>
-      <div class="legend"><span><span class="dot" style="background:var(--good)"></span>直接成功 ${r.direct}（${pct(r.direct, r.n)}%）</span>
-        <span><span class="dot" style="background:var(--warn)"></span>繞路後成功 ${r.indirect}</span><span><span class="dot" style="background:var(--bad)"></span>放棄 ${r.gaveUp}</span><span>共 ${r.n} 人</span></div>
+      <div class="bar" role="img" aria-label="符合路徑 ${r.direct}、偏離路徑但完成 ${r.indirect}、放棄 ${r.gaveUp}">${seg(r.direct, "var(--good)")}${seg(r.indirect, "var(--warn)")}${seg(r.gaveUp, "var(--bad)")}</div>
+      <div class="legend"><span><span class="dot" style="background:var(--good)"></span>${st.integration ? (t.paths?.length ? "符合路徑" : "完成（未設定路徑）") : "直接成功"} ${r.direct}（${pct(r.direct, r.n)}%）</span>
+        <span><span class="dot" style="background:var(--warn)"></span>${st.integration ? "偏離路徑但完成" : "繞路後成功"} ${r.indirect}</span><span><span class="dot" style="background:var(--bad)"></span>放棄 ${r.gaveUp}</span><span>共 ${r.n} 人</span></div>
       <div class="metrics">
         <div class="metric"><b>${pct(r.success, r.n)}%</b><span>完成率</span></div>
         <div class="metric"><b>${secs(r.medianMs)}</b><span>完成時間中位數</span></div>
-        <div class="metric"><b>${st.sourceURL ? "—" : (r.firstClick == null ? "—" : r.firstClick + "%")}</b><span>${st.sourceURL ? "點擊分析" : "第一下就點對"}</span></div>
-        <div class="metric"><b>${st.sourceURL ? "—" : r.misAvg.toFixed(1)}</b><span>${st.sourceURL ? "點擊分析" : "平均誤點次數"}</span></div>
+        ${st.integration ? `<div class="metric"><b>${secs(r.activeMedianMs)}</b><span>網站內操作時間中位數</span></div><div class="metric"><b>${r.deviationRate == null ? "—" : r.deviationRate + "%"}</b><span>偏離可接受路徑比例</span></div>` : ""}
+        <div class="metric"><b>${st.sourceURL && !st.integration ? "—" : (r.firstClick == null ? "—" : r.firstClick + "%")}</b><span>${st.sourceURL && !st.integration ? "點擊分析" : "第一下符合路徑"}</span></div>
+        <div class="metric"><b>${st.sourceURL && !st.integration || st.integration && r.deviationRate == null ? "—" : r.misAvg.toFixed(1)}</b><span>${st.integration ? "平均偏離步數" : st.sourceURL ? "點擊分析" : "平均誤點次數"}</span></div>
         <div class="metric"><b>${r.rating == null ? "—" : r.rating.toFixed(1)}</b><span>難易度（1 很難－5 很簡單）</span></div>
       </div>
-      ${st.sourceURL ? `<p class="note">外部網站模式只記錄任務結果、時間與受測者意見，不會記錄點擊或熱點圖。</p>` : `<details class="heat" data-t="${i}"><summary class="note" style="cursor:pointer">熱點圖</summary>
+      ${st.sourceURL && !st.integration ? `<p class="note">這是舊版網址測試，尚未安裝追蹤程式，因此沒有自動點擊與熱點資料。</p>` : `<details class="heat" data-t="${i}"><summary class="note" style="cursor:pointer">熱點圖</summary>
         <div class="row" style="margin:10px 0 6px"><div style="flex:1 1 260px"><label class="f" for="hs${i}">顯示哪個畫面的點擊</label>
-          <select id="hs${i}"><option value="__first">每個人的第一下點擊（起始畫面）</option>${screens.map(([k, n]) => `<option value="${esc(k)}">畫面「${esc(k)}」（${n} 次點擊）</option>`).join("")}</select></div></div>
+          <select id="hs${i}">${st.integration ? "" : `<option value="__first">每個人的第一下點擊（起始畫面）</option>`}${screens.map(([k, n]) => `<option value="${esc(k)}">畫面「${esc(k.replace("|||", "／"))}」（${n} 次點擊）</option>`).join("")}</select></div></div>
         <p class="legend" style="margin:0 0 8px"><span><span class="dot" style="background:#dc2626"></span>點在可以點的地方</span><span><span class="dot" style="background:#2563eb"></span>誤點（點了不能點的地方）</span></p>
         <div class="heatArea"></div><p class="note heatStatus" style="margin-top:6px"></p></details>`}
-      ${st.sourceURL ? (r.comments.length ? `<details><summary class="note" style="cursor:pointer">受測者意見</summary><ul>${r.comments.map(c => `<li>${esc(c)}</li>`).join("")}</ul></details>` : "") : `<details><summary class="note" style="cursor:pointer">最常被點的地方與受測者意見</summary>
-        <p class="note" style="margin-top:8px">預期路徑：${esc((t.path || []).join(" → ") || "未設定")}</p>
+      ${st.sourceURL && !st.integration ? (r.comments.length ? `<details><summary class="note" style="cursor:pointer">受測者意見</summary><ul>${r.comments.map(c => `<li>${esc(c)}</li>`).join("")}</ul></details>` : "") : `<details><summary class="note" style="cursor:pointer">最常被點的地方與受測者意見</summary>
+        <p class="note" style="margin-top:8px">可接受路徑：${esc(st.integration ? (t.paths || []).map(x => x.join(" → ")).join("；") || "未設定" : (t.path || []).join(" → ") || "未設定")}</p>
         <div class="tblwrap"><table class="el"><thead><tr><th>點擊位置</th><th class="n">次數</th></tr></thead><tbody>
         ${r.top.map(x => `<tr><td>${esc(x.label)}${x.miss ? ' <span class="miss">（不能點的地方）</span>' : ""}</td><td class="n">${x.count}</td></tr>`).join("")}</tbody></table></div>
         ${r.comments.length ? `<ul>${r.comments.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
@@ -618,7 +729,7 @@ function renderShare() {
   $("v-share").innerHTML = `<div class="stack" style="max-width:760px">
     <div class="panel stack"><h2>測試連結</h2>
       <p>把這個連結傳給受測者，不用登入、不用安裝，手機、平板、電腦都能打開。</p>
-      ${st.sourceURL ? `<p class="note">此測試會嵌入 ${esc(st.sourceURL)}。受測者需手動標記完成；若目標網站禁止嵌入，請使用「另開網站」按鈕。</p>` : ""}
+      ${st.sourceURL ? `<p class="note">受測者會在${st.integration?.mode === "liff" ? " LINE LIFF" : "原網站"}登入後操作。${st.integration?.last_seen ? "已收到網站追蹤事件。" : "尚未收到網站追蹤事件；請先加入追蹤程式並試開測試連結。"}</p>` : ""}
       <div class="linkbox"><input type="text" id="lnk" readonly value="${esc(link)}"><button class="btn primary" id="cp">複製</button></div>
       <p class="note" id="cpMsg"></p>
       <p class="note">傳連結時建議附一句說明，例如：「大約 5 分鐘，請照著畫面上的任務操作，不用擔心做錯」。</p></div>
@@ -630,7 +741,12 @@ function renderShare() {
 }
 
 /* ============ tester ============ */
-const T = { sid: "", st: null, i: 0, results: [], role: "", t0: 0, clicks: [], done: false };
+const T = { sid: "", st: null, i: 0, results: [], role: "", t0: 0, clicks: [], done: false, run: "", launchUrl: "", stage: "" };
+const integrated = () => T.st && T.st.mode !== "legacy";
+function saveProgress() {
+  if (!integrated()) return;
+  sessionStorage.setItem(`ut-progress:${T.sid}`, JSON.stringify({ run: T.run, launchUrl: T.launchUrl, i: T.i, results: T.results, role: T.role, stage: T.stage }));
+}
 function card(html) { $("tCard").innerHTML = html; $("tOverlay").classList.remove("hidden"); const f = $("tCard").querySelector("button,select,textarea"); if (f) f.focus(); }
 function hideCard() { $("tOverlay").classList.add("hidden"); }
 async function bootTester(sid) {
@@ -638,12 +754,41 @@ async function bootTester(sid) {
   try { T.st = await api("/api/public/study/" + encodeURIComponent(sid)); }
   catch (e) { card(`<h2>找不到這個測試</h2><p class="note">連結可能有誤，或測試已經結束。請聯絡邀請你的人。</p>`); return; }
   if (!T.st.tasks.length) { card(`<h2>目前沒有進行中的測試</h2><p class="note">請稍後再試，或聯絡邀請你的人。</p>`); return; }
-  if (T.st.url) { $("tOpen").href = T.st.url; $("tOpen").classList.remove("hidden"); }
+  if (integrated()) {
+    $("tFrame").classList.add("hidden");
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(`ut-progress:${sid}`) || "null");
+      if (saved?.run && saved?.stage !== "done") Object.assign(T, saved);
+    } catch (e) {}
+    if (T.run) { $("tOpen").href = T.launchUrl; $("tOpen").textContent = T.st.mode === "liff" ? "在 LINE 開啟" : "開啟網站"; $("tOpen").classList.remove("hidden"); }
+  } else if (T.st.url) { $("tOpen").href = T.st.url; $("tOpen").classList.remove("hidden"); }
   document.title = T.st.name;
-  welcome();
+  if (integrated() && T.run) {
+    if (T.stage === "task") showExternalTask();
+    else if (T.stage === "feedback" && T.results.length) showTaskFeedback(T.results[T.results.length - 1]);
+    else if (T.stage === "login") showLoginPrep();
+    else nextTask();
+  } else welcome();
 }
 function welcome() {
   T.i = 0; T.results = [];
+  if (integrated()) {
+    card(`<h2>${esc(T.st.name)}</h2><p>接下來會在原網站操作 ${T.st.tasks.length} 個任務。請先登入網站；登入完成後才開始計時。</p>
+      <p class="note">同意後，受測網站會記錄點擊位置、畫面代號、操作時間和任務結果，不會記錄密碼、輸入內容或登入權杖。</p>
+      <p class="note">${T.st.mode === "liff" ? "請用手機開啟正式 LIFF 網址；若沒有跳到 LINE，可複製連結到 LINE 聊天室後點開。" : "請在一般瀏覽器開啟網站完成 Google 登入。"}</p>
+      <label class="f" for="tRole">你的身分</label><select id="tRole">${ROLES.map(r => `<option>${r}</option>`).join("")}</select>
+      <div class="row" style="margin-top:16px"><span class="grow"></span><button class="btn primary" id="tStart">同意並前往登入</button></div>`);
+    $("tStart").onclick = async () => {
+      T.role = $("tRole").value;
+      try {
+        const r = await api(`/api/public/study/${encodeURIComponent(T.sid)}/run`, { method: "POST", body: { role: T.role } });
+        T.run = r.run; T.launchUrl = r.url; T.stage = "login"; saveProgress();
+        $("tOpen").href = r.url; $("tOpen").textContent = T.st.mode === "liff" ? "在 LINE 開啟" : "開啟網站"; $("tOpen").classList.remove("hidden");
+        showLoginPrep();
+      } catch (e) { card(`<h2>無法開始測試</h2><p>${esc(e.message)}</p>`); }
+    };
+    return;
+  }
   card(`<h2>${esc(T.st.name)}</h2>
     <p>謝謝你幫忙！接下來會請你完成 ${T.st.tasks.length} 個小任務，大約 5 分鐘。</p>
     <p>我們測的是設計好不好用，不是測你。找不到的時候不用緊張，那正是我們想知道的地方；真的找不到可以按「放棄這題」。</p>
@@ -654,6 +799,7 @@ function welcome() {
 }
 function nextTask() {
   if (T.i >= T.st.tasks.length) return finish();
+  if (integrated()) return prepareExternalTask();
   $("tComplete").classList.add("hidden");
   const t = T.st.tasks[T.i];
   setText("tStep", `任務 ${T.i + 1} / ${T.st.tasks.length}`); setText("tText", t.prompt);
@@ -678,12 +824,78 @@ function nextTask() {
     }
   };
 }
+function stopStatusPoll() { if (T.poll) clearInterval(T.poll); T.poll = null; }
+function showLoginPrep() {
+  stopStatusPoll();
+  card(`<h2>先登入受測網站</h2><p>登入完成並進入網站後，請回到這裡開始任務。登入所花的時間不計入任務。</p>
+    <p class="note">${T.st.mode === "liff" ? "若手機沒有跳到 LINE，請複製下方連結，貼到 LINE 聊天室後點開。" : "請使用一般瀏覽器中的原網站登入。"}</p>
+    <p><a class="btn primary" href="${esc(T.launchUrl)}" target="_blank" rel="noopener">${T.st.mode === "liff" ? "在 LINE 開啟網站" : "開啟網站登入"}</a></p>
+    <code class="rc">${esc(T.launchUrl)}</code><p class="note" id="connectStatus">等待網站連線…</p>
+    <div class="row"><span class="grow"></span><button class="btn primary" id="loginReady" disabled>我已登入，開始任務</button></div>`);
+  async function check() {
+    try {
+      const r = await api(`/api/public/run/${encodeURIComponent(T.run)}/status`);
+      setText("connectStatus", r.ready ? "已連接受測網站。確認登入後可開始任務。" : "尚未收到網站追蹤資料；請確認網站已加入追蹤程式，並從上方連結開啟。");
+      $("loginReady").disabled = !r.ready;
+    } catch (e) { setText("connectStatus", e.message); }
+  }
+  $("loginReady").onclick = () => { stopStatusPoll(); nextTask(); };
+  check(); T.poll = setInterval(check, 2500);
+}
+function prepareExternalTask() {
+  stopStatusPoll(); T.stage = "next"; saveProgress();
+  const task = T.st.tasks[T.i];
+  setText("tStep", `任務 ${T.i + 1} / ${T.st.tasks.length}`); setText("tText", task.prompt);
+  card(`<p class="note">任務 ${T.i + 1} / ${T.st.tasks.length}</p><p class="bigtask">${esc(task.prompt)}</p>
+    <p class="note">記住任務後按開始，再切回已登入的網站操作。平台會自動記錄點擊、操作時間與完成狀態。</p>
+    <div class="row"><span class="grow"></span><button class="btn primary" id="tGo">開始這題並計時</button></div>`);
+  $("tGo").onclick = async () => {
+    $("tGo").disabled = true;
+    try {
+      await api(`/api/public/run/${encodeURIComponent(T.run)}/task`, { method: "POST", body: { taskId: task.id } });
+      T.stage = "task"; T.done = false; saveProgress(); showExternalTask();
+    } catch (e) { $("tGo").disabled = false; card(`<h2>無法開始任務</h2><p>${esc(e.message)}</p>`); }
+  };
+}
+function showExternalTask() {
+  stopStatusPoll(); T.done = false;
+  const task = T.st.tasks[T.i];
+  setText("tStep", `任務 ${T.i + 1} / ${T.st.tasks.length}`); setText("tText", task.prompt);
+  card(`<p class="note">任務 ${T.i + 1} / ${T.st.tasks.length}</p><p class="bigtask">${esc(task.prompt)}</p>
+    <p><a class="btn primary" href="${esc(T.launchUrl)}" target="_blank" rel="noopener">${T.st.mode === "liff" ? "回到 LINE 網站" : "回到受測網站"}</a></p>
+    <p class="note" id="taskStatus">正在等待網站回報完成…</p>
+    <div class="row"><button class="btn" id="taskRefresh">檢查完成狀態</button><span class="grow"></span><button class="btn" id="taskGiveUp">放棄這題</button></div>`);
+  async function check() {
+    if (T.done || T.stage !== "task") return;
+    try {
+      const r = await api(`/api/public/run/${encodeURIComponent(T.run)}/status`);
+      if (r.success) finishExternalTask(false);
+      else setText("taskStatus", r.ready ? "已收到操作資料；完成任務後會自動進入回饋。" : "網站尚未連線，請從測試連結開啟。");
+    } catch (e) { setText("taskStatus", e.message); }
+  }
+  $("taskRefresh").onclick = check;
+  $("taskGiveUp").onclick = () => finishExternalTask(true);
+  check(); T.poll = setInterval(check, 2500);
+}
+async function finishExternalTask(giveUp) {
+  if (T.done) return; T.done = true; stopStatusPoll();
+  try {
+    const r = await api(`/api/public/run/${encodeURIComponent(T.run)}/finish`, { method: "POST", body: { giveUp } });
+    const res = { ...r, rating: null, comment: "" };
+    T.results.push(res); T.stage = "feedback"; saveProgress(); showTaskFeedback(res);
+  } catch (e) { T.done = false; card(`<h2>無法儲存任務</h2><p>${esc(e.message)}</p><button class="btn" id="retryTask">重試</button>`); $("retryTask").onclick = () => finishExternalTask(giveUp); }
+}
 function endTask(success) {
+  if (integrated()) return finishExternalTask(!success);
   if (T.done) return; T.done = true;
   $("tComplete").classList.add("hidden");
   const t = T.st.tasks[T.i];
   const res = { taskId: t.id, success, timeMs: Math.round(performance.now() - T.t0), clicks: T.clicks.slice(0, 200), rating: null, comment: "" };
   T.results.push(res);
+  showTaskFeedback(res);
+}
+function showTaskFeedback(res) {
+  const success = res.success;
   let rating = null;
   card(`<h2>${success ? "完成了！" : "沒關係，這題跳過"}</h2>
     <p>這個任務做起來容易嗎？</p>
@@ -693,7 +905,7 @@ function endTask(success) {
     <div class="row" style="margin-top:14px"><span class="grow"></span><button class="btn primary" id="tNext" disabled>${T.i + 1 < T.st.tasks.length ? "下一題" : "完成"}</button></div>`);
   $("tCard").querySelectorAll("[data-r]").forEach(b => b.onclick = () => {
     rating = +b.dataset.r; $("tCard").querySelectorAll("[data-r]").forEach(x => x.setAttribute("aria-pressed", x === b)); $("tNext").disabled = false; });
-  $("tNext").onclick = () => { res.rating = rating; res.comment = $("tCmt").value.trim().slice(0, 300); T.i++; nextTask(); };
+  $("tNext").onclick = () => { res.rating = rating; res.comment = $("tCmt").value.trim().slice(0, 300); T.i++; T.stage = "next"; saveProgress(); nextTask(); };
 }
 $("tGiveUp").onclick = () => { if (!T.done && T.st && $("tOverlay").classList.contains("hidden")) endTask(false); };
 $("tComplete").onclick = () => { if (!T.done && T.st?.url && $("tOverlay").classList.contains("hidden")) endTask(true); };
@@ -708,11 +920,13 @@ window.addEventListener("message", e => {
   if (e.data.type === "success") setTimeout(() => endTask(true), 600);
 });
 async function finish() {
+  stopStatusPoll();
   setText("tStep", ""); setText("tText", ""); $("tComplete").classList.add("hidden"); $("tFrame").src = "about:blank"; $("tFrame").srcdoc = "";
-  const session = { role: T.role, device: { w: innerWidth, h: innerHeight }, results: T.results };
+  const session = { role: T.role, device: { w: innerWidth, h: innerHeight }, results: T.results, runId: integrated() ? T.run : undefined };
   card(`<h2>送出中…</h2>`);
   try {
     await api(`/api/public/study/${encodeURIComponent(T.sid)}/session`, { method: "POST", body: session });
+    if (integrated()) { T.stage = "done"; sessionStorage.removeItem(`ut-progress:${T.sid}`); }
     card(`<h2>全部完成，謝謝你！</h2><p>你的操作紀錄已經送出，可以關閉這個頁面了。</p>
       <div class="row"><span class="grow"></span><button class="btn" id="tAgain">再測一位</button></div>`);
     $("tAgain").onclick = welcome;
